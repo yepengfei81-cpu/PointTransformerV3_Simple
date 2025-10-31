@@ -2,6 +2,7 @@ import os
 import sys
 import weakref
 import torch
+import wandb
 import torch.nn as nn
 import torch.utils.data
 from functools import partial
@@ -93,7 +94,6 @@ class TrainerBase:
         if comm.is_main_process():
             self.writer.close()
 
-
 @TRAINERS.register_module("DefaultTrainer")
 class Trainer(TrainerBase):
     def __init__(self, cfg):
@@ -163,7 +163,6 @@ class Trainer(TrainerBase):
 
         # Perform optimizer step
         if self._gradient_accumulation_counter >= self.cfg.gradient_accumulation_steps:
-            # ❌ 删除整个 if self.cfg.enable_amp 分支
             if self.cfg.clip_grad is not None:
                 torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(), self.cfg.clip_grad
@@ -189,7 +188,7 @@ class Trainer(TrainerBase):
         model = build_model(self.cfg.model)
         n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
         self.logger.info(f"Num params: {n_parameters}")
-        return model
+        return model.cuda()
 
     def build_writer(self):
         writer = SummaryWriter(self.cfg.save_path) if comm.is_main_process() else None
@@ -270,20 +269,3 @@ class Trainer(TrainerBase):
             // self.cfg.gradient_accumulation_steps
         )
         return build_scheduler(self.cfg.scheduler, self.optimizer)
-
-
-@TRAINERS.register_module("MultiDatasetTrainer")
-class MultiDatasetTrainer(Trainer):
-    def build_train_loader(self):
-        from pointcept.datasets import MultiDatasetDataloader
-
-        train_data = build_dataset(self.cfg.data.train)
-        train_loader = MultiDatasetDataloader(
-            train_data,
-            self.cfg.batch_size_per_gpu,
-            self.cfg.num_worker_per_gpu,
-            self.cfg.mix_prob,
-            self.cfg.seed,
-        )
-        self.comm_info["iter_per_epoch"] = len(train_loader)
-        return train_loader
