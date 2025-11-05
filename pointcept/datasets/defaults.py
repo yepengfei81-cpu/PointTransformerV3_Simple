@@ -497,3 +497,148 @@ class ConcatDataset(Dataset):
 
     def __len__(self):
         return len(self.data_list) * self.loop
+
+@DATASETS.register_module()
+class ContactPositionDataset(Dataset):
+    
+    def __init__(
+        self,
+        split="train",
+        data_root="data/touch_processed_data",
+        transform=None,
+        test_mode=False,
+        test_cfg=None,
+        loop=1,
+        ignore_index=-1,
+    ):
+        super(ContactPositionDataset, self).__init__()
+        self.data_root = data_root
+        self.split = split
+        self.transform = Compose(transform)
+        self.loop = loop if not test_mode else 1
+        self.test_mode = test_mode
+        self.test_cfg = test_cfg if test_mode else None
+        self.ignore_index = ignore_index
+        
+        if test_mode:
+            self.test_voxelize = TRANSFORMS.build(self.test_cfg.voxelize)
+            self.test_crop = (
+                TRANSFORMS.build(self.test_cfg.crop) if self.test_cfg.crop else None
+            )
+            self.post_transform = Compose(self.test_cfg.post_transform)
+            self.aug_transform = [Compose(aug) for aug in self.test_cfg.aug_transform]
+        
+        self.data_list = self.get_data_list()
+        
+        logger = get_root_logger()
+        logger.info(
+            "Totally {} x {} samples in {} {} set.".format(
+                len(self.data_list),
+                self.loop,
+                os.path.basename(self.data_root),
+                split,
+            )
+        )
+    
+    def get_data_list(self):
+        from pathlib import Path
+        
+        split_file = Path(self.data_root) / f"{self.split}.txt"
+        
+        if not split_file.exists():
+            raise FileNotFoundError(
+                f"Split file not found: {split_file}\n"
+                f"Please run: python tools/generate_split_files.py --data_root {self.data_root}"
+            )
+        
+        data_list = []
+        with open(split_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    data_list.append(line)
+        
+        if len(data_list) == 0:
+            raise ValueError(f"Empty split file: {split_file}")
+        
+        return data_list
+    
+    def get_data_name(self, idx):
+        data_path = self.data_list[idx % len(self.data_list)]
+        category = os.path.basename(os.path.dirname(os.path.dirname(data_path)))
+        patch_name = os.path.basename(data_path).replace('.pth', '')
+        return f"{category}-{patch_name}"
+    
+    def get_split_name(self, idx):
+        return self.split
+    
+    def get_data(self, idx):
+        from pathlib import Path
+        
+        data_path = Path(self.data_root) / self.data_list[idx % len(self.data_list)]
+        data_dict = torch.load(data_path, weights_only=False)
+        
+        if "local_coord" not in data_dict:
+            raise KeyError(f"'local_coord' not found in {data_path}")
+        if "local_color" not in data_dict:
+            raise KeyError(f"'local_color' not found in {data_path}")
+        
+        data_dict["coord"] = data_dict.pop("local_coord").astype(np.float32)
+        data_dict["color"] = data_dict.pop("local_color").astype(np.float32)
+        
+        if "gt_position" in data_dict:
+            data_dict["gt_position"] = data_dict["gt_position"].astype(np.float32)
+        else:
+            raise KeyError(f"'gt_position' not found in {data_path}")
+        
+        if "category_id" in data_dict:
+            if isinstance(data_dict["category_id"], (int, np.integer)):
+                data_dict["category_id"] = np.array(data_dict["category_id"], dtype=np.int64)
+            elif isinstance(data_dict["category_id"], np.ndarray):
+                data_dict["category_id"] = data_dict["category_id"].astype(np.int64)
+        
+        data_dict["name"] = self.get_data_name(idx)
+        data_dict["split"] = self.get_split_name(idx)
+        
+        return data_dict
+    
+    def prepare_train_data(self, idx):
+        data_dict = self.get_data(idx)
+        data_dict = self.transform(data_dict)
+        return data_dict
+    
+    def prepare_test_data(self, idx):
+        data_dict = self.get_data(idx)
+        data_dict = self.transform(data_dict)
+        
+        result_dict = dict(
+            gt_position=data_dict.pop("gt_position"),
+            name=data_dict.pop("name"),
+        )
+        
+        if "category_id" in data_dict:
+            result_dict["category_id"] = data_dict.pop("category_id")
+        
+        if len(self.aug_transform) == 0:
+            data_dict["index"] = np.arange(data_dict["coord"].shape[0])
+            data_dict = self.post_transform(data_dict)
+            result_dict["fragment_list"] = [data_dict]
+        else:
+            fragment_list = []
+            for aug in self.aug_transform:
+                aug_data = aug(deepcopy(data_dict))
+                aug_data["index"] = np.arange(aug_data["coord"].shape[0])
+                aug_data = self.post_transform(aug_data)
+                fragment_list.append(aug_data)
+            result_dict["fragment_list"] = fragment_list
+        
+        return result_dict
+    
+    def __getitem__(self, idx):
+        if self.test_mode:
+            return self.prepare_test_data(idx)
+        else:
+            return self.prepare_train_data(idx)
+    
+    def __len__(self):
+        return len(self.data_list) * self.loop

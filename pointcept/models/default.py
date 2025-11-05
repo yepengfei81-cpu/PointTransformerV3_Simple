@@ -38,6 +38,111 @@ class DefaultSegmentor(nn.Module):
 
 
 @MODELS.register_module()
+class ContactPositionRegressor(nn.Module):
+    def __init__(
+        self,
+        num_outputs=3,
+        backbone_out_channels=64,
+        backbone=None,
+        criteria=None,
+        freeze_backbone=False,
+        pooling_type="attention",  # "max" | "avg" | "attention"
+    ):
+        super().__init__()
+        
+        self.backbone = build_model(backbone)
+        self.criteria = build_criteria(criteria)
+        self.freeze_backbone = freeze_backbone
+        if self.freeze_backbone:
+            for p in self.backbone.parameters():
+                p.requires_grad = False
+        
+        self.pooling_type = pooling_type
+        if pooling_type == "attention":
+            self.attention_pool = nn.Sequential(
+                nn.Linear(backbone_out_channels, backbone_out_channels // 4),
+                nn.ReLU(inplace=True),
+                nn.Linear(backbone_out_channels // 4, 1),
+            )
+        
+        self.regression_head = nn.Sequential(
+            nn.Linear(backbone_out_channels, backbone_out_channels * 2),
+            nn.BatchNorm1d(backbone_out_channels * 2),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            
+            nn.Linear(backbone_out_channels * 2, backbone_out_channels),
+            nn.BatchNorm1d(backbone_out_channels),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
+            
+            nn.Linear(backbone_out_channels, num_outputs),
+        )
+    
+    def forward(self, input_dict, return_point=False):
+        point = Point(input_dict)
+        point = self.backbone(point)
+        
+        if isinstance(point, Point):
+            while "pooling_parent" in point.keys():
+                assert "pooling_inverse" in point.keys()
+                parent = point.pop("pooling_parent")
+                inverse = point.pop("pooling_inverse")
+                parent.feat = torch.cat([parent.feat, point.feat[inverse]], dim=-1)
+                point = parent
+            feat = point.feat
+        else:
+            feat = point
+        
+        if "offset" not in input_dict:
+            if self.pooling_type == "max":
+                global_feat = feat.max(dim=0, keepdim=True)[0]
+            elif self.pooling_type == "avg":
+                global_feat = feat.mean(dim=0, keepdim=True)
+            elif self.pooling_type == "attention":
+                attn_weights = self.attention_pool(feat).softmax(dim=0)
+                global_feat = (feat * attn_weights).sum(dim=0, keepdim=True)
+        else:
+            offset = input_dict["offset"]
+            batch = offset2batch(offset)
+            batch_size = offset.shape[0]
+            global_feat = []
+            
+            for i in range(batch_size):
+                mask = (batch == i)
+                sample_feat = feat[mask]
+                
+                if self.pooling_type == "max":
+                    sample_global = sample_feat.max(dim=0)[0]
+                elif self.pooling_type == "avg":
+                    sample_global = sample_feat.mean(dim=0)
+                elif self.pooling_type == "attention":
+                    attn_weights = self.attention_pool(sample_feat).softmax(dim=0)
+                    sample_global = (sample_feat * attn_weights).sum(dim=0)
+                
+                global_feat.append(sample_global)
+            
+            global_feat = torch.stack(global_feat)
+        
+        position_pred = self.regression_head(global_feat)
+        
+        return_dict = {}
+        if return_point:
+            return_dict["point"] = point
+        
+        if self.training:
+            loss = self.criteria(position_pred, input_dict["gt_position"])
+            return_dict["loss"] = loss
+        elif "gt_position" in input_dict.keys():
+            loss = self.criteria(position_pred, input_dict["gt_position"])
+            return_dict["loss"] = loss
+            return_dict["position_pred"] = position_pred
+        else:
+            return_dict["position_pred"] = position_pred
+        
+        return return_dict
+
+@MODELS.register_module()
 class DefaultSegmentorV2(nn.Module):
     def __init__(
         self,
