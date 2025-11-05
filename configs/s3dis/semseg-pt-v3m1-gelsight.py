@@ -15,6 +15,9 @@ enable_wandb = True
 model = dict(
     type="ContactPositionRegressor",
     num_outputs=3,
+    num_classes=3,
+    use_category_condition=True,
+    category_emb_dim=32,
     backbone_out_channels=64,
     backbone=dict(
         type="PT-v3m1",
@@ -49,10 +52,12 @@ model = dict(
         pdnorm_affine=False,
         pdnorm_conditions=(),
     ),
-    criteria=[
-        dict(type="SmoothL1Loss", loss_weight=1.0),
-        dict(type="MSELoss", loss_weight=0.5),
-    ],
+    # criteria=[
+    #     dict(type="SmoothL1Loss", loss_weight=1.0),
+    #     dict(type="MSELoss", loss_weight=0.5),
+    # ],
+    freeze_backbone=False,
+    pooling_type="attention",    
 )
 
 epoch = 500

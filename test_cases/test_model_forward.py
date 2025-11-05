@@ -17,8 +17,14 @@ def test_model_forward():
     print("Testing Model Forward Pass...")
     print("=" * 80)
     
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"\n🖥️  Device: {device}")
+    if not torch.cuda.is_available():
+        print("   ⚠️  Warning: CUDA not available, but PTv3 requires GPU!")
+        print("   ⚠️  This test will likely fail on CPU.")
+    
     cfg = Config.fromfile("/root/autodl-tmp/Pointcept/configs/s3dis/semseg-pt-v3m1-gelsight.py")
-    # cfg = Config.fromfile("/root/autodl-tmp/Pointcept/configs/s3dis/semseg-pt-v3m1-1-rpe.py")
+    
     # Build dataset
     train_dataset = build_dataset(cfg.data.train)
     train_loader = DataLoader(
@@ -33,9 +39,11 @@ def test_model_forward():
     print(f"\n🔧 Building model...")
     try:
         model = build_model(cfg.model)
+        model = model.to(device)
         model.eval()
         print(f"   ✅ Model built successfully")
         print(f"   Type: {type(model).__name__}")
+        print(f"   Device: {next(model.parameters()).device}")
     except Exception as e:
         print(f"   ❌ Model build failed: {e}")
         import traceback
@@ -52,6 +60,12 @@ def test_model_forward():
     print(f"   - offset: {batch['offset']}")
     print(f"   - gt_position: {batch['gt_position'].shape}")
     
+    for key in batch.keys():
+        if isinstance(batch[key], torch.Tensor):
+            batch[key] = batch[key].to(device)
+    
+    print(f"   - coord device: {batch['coord'].device}")
+    
     # Test forward
     print(f"\n🔧 Testing forward pass...")
     try:
@@ -65,7 +79,15 @@ def test_model_forward():
             print(f"   Output keys: {list(output.keys())}")
             for key, value in output.items():
                 if isinstance(value, torch.Tensor):
-                    print(f"      - {key}: shape={value.shape}, dtype={value.dtype}")
+                    print(f"      - {key}: shape={value.shape}, dtype={value.dtype}, device={value.device}")
+                    
+                    if key == "position_pred" and "gt_position" in batch:
+                        print(f"\n   📊 Predictions vs Ground Truth:")
+                        pred = value.cpu()
+                        gt = batch["gt_position"].cpu()
+                        for i in range(len(pred)):
+                            print(f"      Sample {i}: pred={pred[i].tolist()}, gt={gt[i].tolist()}")
+                            
         elif isinstance(output, torch.Tensor):
             print(f"   Output shape: {output.shape}")
         
@@ -76,11 +98,6 @@ def test_model_forward():
         print(f"\n   Full traceback:")
         import traceback
         traceback.print_exc()
-        
-        print(f"\n   💡 This is expected!")
-        print(f"   PTv3's DefaultSegmentor outputs per-point predictions,")
-        print(f"   but you need per-sample predictions (3D position).")
-        print(f"\n   Next step: Modify the model to output (batch_size, 3)")
 
 
 if __name__ == "__main__":

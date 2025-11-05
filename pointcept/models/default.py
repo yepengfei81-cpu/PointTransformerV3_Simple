@@ -42,6 +42,9 @@ class ContactPositionRegressor(nn.Module):
     def __init__(
         self,
         num_outputs=3,
+        num_classes=3,
+        use_category_condition=True,
+        category_emb_dim=32,
         backbone_out_channels=64,
         backbone=None,
         criteria=None,
@@ -51,12 +54,24 @@ class ContactPositionRegressor(nn.Module):
         super().__init__()
         
         self.backbone = build_model(backbone)
-        self.criteria = build_criteria(criteria)
+        # self.criteria = build_criteria(criteria)
+        self.criterion_smooth_l1 = nn.SmoothL1Loss()
+        self.criterion_mse = nn.MSELoss()
+        #        
         self.freeze_backbone = freeze_backbone
+        self.use_category_condition = use_category_condition
+        
         if self.freeze_backbone:
             for p in self.backbone.parameters():
                 p.requires_grad = False
         
+        if use_category_condition:
+            self.category_embedding = nn.Embedding(num_classes, category_emb_dim)
+            regression_input_dim = backbone_out_channels + category_emb_dim
+        else:
+            regression_input_dim = backbone_out_channels
+        
+        # Pooling
         self.pooling_type = pooling_type
         if pooling_type == "attention":
             self.attention_pool = nn.Sequential(
@@ -66,7 +81,7 @@ class ContactPositionRegressor(nn.Module):
             )
         
         self.regression_head = nn.Sequential(
-            nn.Linear(backbone_out_channels, backbone_out_channels * 2),
+            nn.Linear(regression_input_dim, backbone_out_channels * 2),
             nn.BatchNorm1d(backbone_out_channels * 2),
             nn.ReLU(inplace=True),
             nn.Dropout(0.3),
@@ -122,21 +137,35 @@ class ContactPositionRegressor(nn.Module):
                 
                 global_feat.append(sample_global)
             
-            global_feat = torch.stack(global_feat)
+            global_feat = torch.stack(global_feat)  # (batch_size, C)
         
-        position_pred = self.regression_head(global_feat)
+        if self.use_category_condition and "category_id" in input_dict:
+            category_id = input_dict["category_id"]  # (batch_size,)
+            if category_id.dtype != torch.long:
+                category_id = category_id.long()
+            
+            category_emb = self.category_embedding(category_id)  # (batch_size, category_emb_dim)
+            global_feat = torch.cat([global_feat, category_emb], dim=-1)  # (batch_size, C + emb_dim)
         
+        position_pred = self.regression_head(global_feat)  # (batch_size, 3) 
         return_dict = {}
         if return_point:
             return_dict["point"] = point
         
-        if self.training:
-            loss = self.criteria(position_pred, input_dict["gt_position"])
-            return_dict["loss"] = loss
-        elif "gt_position" in input_dict.keys():
-            loss = self.criteria(position_pred, input_dict["gt_position"])
-            return_dict["loss"] = loss
-            return_dict["position_pred"] = position_pred
+        if self.training or "gt_position" in input_dict.keys():
+            gt_position = input_dict["gt_position"]
+            
+            # total_loss = 0.0
+            # for criterion in self.criteria:
+            #     total_loss += criterion(position_pred, gt_position)
+            loss_smooth_l1 = self.criterion_smooth_l1(position_pred, gt_position)
+            loss_mse = self.criterion_mse(position_pred, gt_position)
+            total_loss = loss_smooth_l1 * 1.0 + loss_mse * 0.5  
+                     
+            return_dict["loss"] = total_loss
+            
+            if not self.training:
+                return_dict["position_pred"] = position_pred
         else:
             return_dict["position_pred"] = position_pred
         
