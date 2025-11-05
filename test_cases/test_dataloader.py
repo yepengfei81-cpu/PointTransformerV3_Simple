@@ -17,7 +17,8 @@ def test_real_dataloader():
     print("=" * 80)
     
     cfg = Config.fromfile("/root/autodl-tmp/Pointcept/configs/s3dis/semseg-pt-v3m1-gelsight.py")
-    
+    # cfg = Config.fromfile("/root/autodl-tmp/Pointcept/configs/s3dis/semseg-pt-v3m1-1-rpe.py")
+
     train_dataset = build_dataset(cfg.data.train)
     
     train_loader = DataLoader(
@@ -56,12 +57,17 @@ def test_real_dataloader():
                 print(f"      - {key}: {type(value)}")
         
         if "offset" in batch:
+            offset = batch["offset"]
             print(f"\n   Offset analysis:")
-            print(f"      - Offset values: {batch['offset']}")
-            print(f"      - Number of samples: {len(batch['offset']) - 1}")
-            for j in range(len(batch['offset']) - 1):
-                n_points = batch['offset'][j + 1] - batch['offset'][j]
-                print(f"      - Sample {j}: {n_points} points")
+            print(f"      - Offset values: {offset}")
+            
+            num_samples = len(offset)
+            print(f"      - Number of samples: {num_samples}")
+            
+            print(f"      - Sample 0: {offset[0]} points")
+            for i in range(1, len(offset)):
+                n_points = offset[i] - offset[i - 1]
+                print(f"      - Sample {i}: {n_points} points")
         
         if "gt_position" in batch:
             print(f"\n   Ground truth:")

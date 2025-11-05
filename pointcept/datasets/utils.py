@@ -22,7 +22,10 @@ def collate_fn(batch):
         raise TypeError(f"{batch.dtype} is not supported.")
 
     if isinstance(batch[0], torch.Tensor):
-        return torch.cat(list(batch))
+        if batch[0].dim() == 0:
+            return torch.stack(list(batch))
+        else:        
+            return torch.cat(list(batch))
     elif isinstance(batch[0], str):
         # str is also a kind of Sequence, judgement should before Sequence
         return list(batch)
@@ -71,7 +74,24 @@ def point_collate_fn(batch, mix_prob=0):
     assert isinstance(
         batch[0], Mapping
     )  # currently, only support input_dict, rather than input_list
-    batch = collate_fn(batch)
+    stack_fields = {"gt_position"}
+    special_data = {field: [] for field in stack_fields}
+    clean_batch = []
+    
+    for data_dict in batch:
+        clean_dict = {}
+        for key, value in data_dict.items():
+            if key in stack_fields:
+                special_data[key].append(value)
+            else:
+                clean_dict[key] = value
+        clean_batch.append(clean_dict)
+    
+    batch = collate_fn(clean_batch)
+    
+    for field, values in special_data.items():
+        if values:
+            batch[field] = torch.stack(values)
     if random.random() < mix_prob:
         if "instance" in batch.keys():
             offset = batch["offset"]
