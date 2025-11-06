@@ -165,9 +165,9 @@ class ContactPositionRegressor(nn.Module):
             return_dict["loss"] = total_loss
             
             if not self.training:
-                return_dict["position_pred"] = position_pred
+                return_dict["pred_position"] = position_pred
         else:
-            return_dict["position_pred"] = position_pred
+            return_dict["pred_position"] = position_pred
         
         return return_dict
 

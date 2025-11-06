@@ -171,3 +171,18 @@ data = dict(
         ),
     ),
 )
+
+# adapt new datasets trainer
+train = dict(
+    type="RegressionTrainer",
+)
+
+# TODO：CHECK HOOK LIST
+hooks = [
+    dict(type="CheckpointLoader"),
+    dict(type="ModelHook"),
+    dict(type="IterationTimer", warmup_iter=2),
+    dict(type="InformationWriter"),
+    dict(type="RegressionEvaluator", write_per_class=False),
+    dict(type="CheckpointSaver", save_freq=None),
+]

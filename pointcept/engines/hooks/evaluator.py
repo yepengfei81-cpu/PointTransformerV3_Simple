@@ -642,3 +642,181 @@ class InsSegEvaluator(HookBase):
             )
             self.trainer.comm_info["current_metric_value"] = all_ap_50  # save for saver
             self.trainer.comm_info["current_metric_name"] = "AP50"  # save for saver
+
+
+@HOOKS.register_module()
+class RegressionEvaluator(HookBase):
+    def __init__(self, write_per_class=False):
+        self.write_per_class = write_per_class
+    
+    def before_train(self):
+        """Setup WandB metrics if enabled"""
+        if self.trainer.writer is not None and self.trainer.cfg.get("enable_wandb", False):
+            wandb.define_metric("val/*", step_metric="Epoch")
+    
+    def after_epoch(self):
+        """Evaluate after each epoch"""
+        if self.trainer.cfg.get("evaluate", False):
+            self.eval()
+        else:
+            # No validation set, use training loss
+            if "loss" in self.trainer.storage.history_dict:
+                train_loss = self.trainer.storage.history("loss").avg
+                self.trainer.comm_info["current_metric_value"] = -train_loss
+                self.trainer.comm_info["current_metric_name"] = "train_loss"
+    
+    def eval(self):
+        """Run validation"""
+        self.trainer.logger.info(">>>>>>>>>>>>>>>> Start Evaluation >>>>>>>>>>>>>>>>")
+        
+        if self.trainer.val_loader is None:
+            self.trainer.logger.info("No validation loader available")
+            # Use training loss as fallback
+            if "loss" in self.trainer.storage.history_dict:
+                train_loss = self.trainer.storage.history("loss").avg
+                self.trainer.comm_info["current_metric_value"] = train_loss
+                self.trainer.comm_info["current_metric_name"] = "train_loss"
+            return
+        
+        self.trainer.model.eval()
+        
+        # Storage for per-class statistics
+        category_errors = {}  # {category_id: [errors]}
+        
+        # Validation loop
+        for i, input_dict in enumerate(self.trainer.val_loader):
+            # Move to GPU
+            for key in input_dict.keys():
+                if isinstance(input_dict[key], torch.Tensor):
+                    input_dict[key] = input_dict[key].cuda(non_blocking=True)
+            
+            # Forward pass (no gradient)
+            with torch.no_grad():
+                output_dict = self.trainer.model(input_dict)
+            
+            # Get predictions and targets
+            pred_position = output_dict["pred_position"]  # [B, 3]
+            gt_position = input_dict["gt_position"]        # [B, 3]
+            loss = output_dict["loss"]
+            
+            # Calculate distances
+            distances = torch.norm(pred_position - gt_position, dim=1)  # [B]
+            axis_errors = torch.abs(pred_position - gt_position)         # [B, 3]
+            
+            # Store metrics (for distributed training sync)
+            if comm.get_world_size() > 1:
+                dist.all_reduce(distances)
+                dist.all_reduce(axis_errors)
+            
+            # Store in history
+            self.trainer.storage.put_scalar("val_loss", loss.item())
+            self.trainer.storage.put_scalar("val_distance", distances.mean().item())
+            self.trainer.storage.put_scalar("val_x_error", axis_errors[:, 0].mean().item())
+            self.trainer.storage.put_scalar("val_y_error", axis_errors[:, 1].mean().item())
+            self.trainer.storage.put_scalar("val_z_error", axis_errors[:, 2].mean().item())
+            
+            # Per-class statistics (if available)
+            if "category_id" in input_dict:
+                category_ids = input_dict["category_id"].cpu().numpy()
+                distances_cpu = distances.cpu().numpy()
+                
+                for cat_id, dist in zip(category_ids, distances_cpu):
+                    if cat_id not in category_errors:
+                        category_errors[cat_id] = []
+                    category_errors[cat_id].append(dist)
+            
+            # Log progress
+            self.trainer.logger.info(
+                "Val: [{iter}/{max_iter}] Loss {loss:.6f} Distance {dist:.6f}".format(
+                    iter=i + 1,
+                    max_iter=len(self.trainer.val_loader),
+                    loss=loss.item(),
+                    dist=distances.mean().item()
+                )
+            )
+        
+        # Compute average metrics
+        val_loss = self.trainer.storage.history("val_loss").avg
+        mean_distance = self.trainer.storage.history("val_distance").avg
+        mean_x_error = self.trainer.storage.history("val_x_error").avg
+        mean_y_error = self.trainer.storage.history("val_y_error").avg
+        mean_z_error = self.trainer.storage.history("val_z_error").avg
+        
+        # Log summary
+        self.trainer.logger.info(
+            "Val result: Loss/Distance/X/Y/Z {:.6f}/{:.6f}/{:.6f}/{:.6f}/{:.6f}".format(
+                val_loss, mean_distance, mean_x_error, mean_y_error, mean_z_error
+            )
+        )
+        
+        # Per-class results
+        if category_errors and hasattr(self.trainer.cfg.data, "names"):
+            for cat_id, errors in category_errors.items():
+                cat_mean_error = np.mean(errors)
+                cat_name = self.trainer.cfg.data.names[cat_id] if cat_id < len(self.trainer.cfg.data.names) else f"class_{cat_id}"
+                self.trainer.logger.info(
+                    "Class_{idx}-{name} Result: distance {dist:.6f}".format(
+                        idx=cat_id,
+                        name=cat_name,
+                        dist=cat_mean_error
+                    )
+                )
+        
+        # TensorBoard logging
+        current_epoch = self.trainer.epoch + 1
+        if self.trainer.writer is not None:
+            self.trainer.writer.add_scalar("val/loss", val_loss, current_epoch)
+            self.trainer.writer.add_scalar("val/mean_distance", mean_distance, current_epoch)
+            self.trainer.writer.add_scalar("val/x_error", mean_x_error, current_epoch)
+            self.trainer.writer.add_scalar("val/y_error", mean_y_error, current_epoch)
+            self.trainer.writer.add_scalar("val/z_error", mean_z_error, current_epoch)
+            
+            # WandB logging
+            if self.trainer.cfg.get("enable_wandb", False):
+                wandb.log(
+                    {
+                        "Epoch": current_epoch,
+                        "val/loss": val_loss,
+                        "val/mean_distance": mean_distance,
+                        "val/x_error": mean_x_error,
+                        "val/y_error": mean_y_error,
+                        "val/z_error": mean_z_error,
+                    },
+                    step=wandb.run.step,
+                )
+            
+            # Per-class metrics (if enabled)
+            if self.write_per_class and category_errors and hasattr(self.trainer.cfg.data, "names"):
+                for cat_id, errors in category_errors.items():
+                    cat_mean_error = np.mean(errors)
+                    cat_name = self.trainer.cfg.data.names[cat_id] if cat_id < len(self.trainer.cfg.data.names) else f"class_{cat_id}"
+                    
+                    self.trainer.writer.add_scalar(
+                        f"val/cls_{cat_id}-{cat_name}_distance",
+                        cat_mean_error,
+                        current_epoch,
+                    )
+                    
+                    if self.trainer.cfg.get("enable_wandb", False):
+                        wandb.log(
+                            {
+                                "Epoch": current_epoch,
+                                f"val/cls_{cat_id}-{cat_name}_distance": cat_mean_error,
+                            },
+                            step=wandb.run.step,
+                        )
+        
+        self.trainer.logger.info("<<<<<<<<<<<<<<<<< End Evaluation <<<<<<<<<<<<<<<<<")
+        
+        # Save metric for CheckpointSaver (lower is better for regression)
+        self.trainer.comm_info["current_metric_value"] = -mean_distance
+        self.trainer.comm_info["current_metric_name"] = "mean_distance"
+    
+    def after_train(self):
+        """Log best metric after training"""
+        self.trainer.logger.info(
+            "Best {}: {:.6f}".format(
+                "mean_distance", 
+                -self.trainer.best_metric_value
+            )
+        )
