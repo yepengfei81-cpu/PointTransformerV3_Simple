@@ -1,0 +1,16 @@
+{
+  "patch_name": "median_Scissors_003_patch_00012",
+  "pred_position": [
+    0.011498276144266129,
+    0.0008284721989184618,
+    0.008248717524111271
+  ],
+  "gt_position": [
+    0.014036494307219982,
+    0.0006927382783032954,
+    0.010633702389895916
+  ],
+  "error_meters": 0.003485559919148744,
+  "error_mm": 3.485559919148744,
+  "complete_model": "../../touch_processed_data/Scissors/bigpointcloud_003.ply"
+}
