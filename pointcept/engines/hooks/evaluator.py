@@ -650,8 +650,7 @@ class RegressionEvaluator(HookBase):
         self.write_per_class = write_per_class
     
     def before_train(self):
-        """Setup WandB metrics if enabled"""
-        if self.trainer.writer is not None and self.trainer.cfg.get("enable_wandb", False):
+        if self.trainer.writer is not None and self.trainer.cfg.enable_wandb:
             wandb.define_metric("val/*", step_metric="Epoch")
     
     def after_epoch(self):

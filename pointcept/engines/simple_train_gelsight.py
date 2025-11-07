@@ -3,7 +3,7 @@ import torch
 from functools import partial
 from pathlib import Path
 from tensorboardX import SummaryWriter
-
+import wandb
 from .simple_train import TrainerBase, TRAINERS
 from .defaults import worker_init_fn
 import pointcept.utils.comm as comm
@@ -157,24 +157,18 @@ class RegressionTrainer(TrainerBase):
         return model
 
     def build_writer(self):
-        writer = None
-        
-        if comm.is_main_process():
-            writer = SummaryWriter(self.cfg.save_path)
-            self.logger.info(f"   TensorBoard log dir: {self.cfg.save_path}")
-            
-            if self.cfg.get("enable_wandb", False):
-                import wandb
-                tag, name = Path(self.cfg.save_path).parts[-2:]
-                wandb.init(
-                    project=self.cfg.get("wandb_project", "pointcept"),
-                    name=f"{tag}/{name}",
-                    tags=[tag],
-                    dir=self.cfg.save_path,
-                    config=dict(self.cfg),
-                )
-                self.logger.info(f"   WandB project: {self.cfg.wandb_project}")
-        
+        writer = SummaryWriter(self.cfg.save_path) if comm.is_main_process() else None
+        self.logger.info(f"Tensorboard writer logging dir: {self.cfg.save_path}")
+        if self.cfg.enable_wandb and comm.is_main_process():
+            tag, name = Path(self.cfg.save_path).parts[-2:]
+            wandb.init(
+                project=self.cfg.wandb_project,
+                name=f"{tag}/{name}",
+                tags=[tag],
+                dir=self.cfg.save_path,
+                settings=wandb.Settings(api_key=self.cfg.wandb_key),
+                config=self.cfg,
+            )
         return writer
 
     def build_train_loader(self):
@@ -261,13 +255,3 @@ class RegressionTrainer(TrainerBase):
         self.logger.info(f"   Total steps: {total_steps}")
         
         return scheduler
-    
-    def build_writer(self):
-        """Build TensorBoard writer"""
-        writer = None
-        
-        if comm.is_main_process():
-            writer = SummaryWriter(self.cfg.save_path)
-            self.logger.info(f"   TensorBoard log dir: {self.cfg.save_path}")
-        
-        return writer

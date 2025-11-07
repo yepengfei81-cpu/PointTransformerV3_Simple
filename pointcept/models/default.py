@@ -45,7 +45,7 @@ class ContactPositionRegressor(nn.Module):
         num_classes=3,
         use_category_condition=True,
         category_emb_dim=32,
-        backbone_out_channels=64,
+        backbone_out_channels=512,
         backbone=None,
         criteria=None,
         freeze_backbone=False,
@@ -81,17 +81,17 @@ class ContactPositionRegressor(nn.Module):
             )
         
         self.regression_head = nn.Sequential(
-            nn.Linear(regression_input_dim, backbone_out_channels * 2),
-            nn.BatchNorm1d(backbone_out_channels * 2),
+            nn.Linear(regression_input_dim, backbone_out_channels // 2),
+            nn.LayerNorm(backbone_out_channels // 2),
             nn.ReLU(inplace=True),
             nn.Dropout(0.3),
             
-            nn.Linear(backbone_out_channels * 2, backbone_out_channels),
-            nn.BatchNorm1d(backbone_out_channels),
+            nn.Linear(backbone_out_channels // 2, backbone_out_channels // 4),
+            nn.LayerNorm(backbone_out_channels // 4),
             nn.ReLU(inplace=True),
             nn.Dropout(0.2),
-            
-            nn.Linear(backbone_out_channels, num_outputs),
+
+            nn.Linear(backbone_out_channels // 4, num_outputs),
         )
     
     def forward(self, input_dict, return_point=False):
@@ -103,13 +103,14 @@ class ContactPositionRegressor(nn.Module):
                 assert "pooling_inverse" in point.keys()
                 parent = point.pop("pooling_parent")
                 inverse = point.pop("pooling_inverse")
-                parent.feat = torch.cat([parent.feat, point.feat[inverse]], dim=-1)
+                # parent.feat = torch.cat([parent.feat, point.feat[inverse]], dim=-1)
+                parent.feat = point.feat[inverse]
                 point = parent
             feat = point.feat
         else:
             feat = point
         
-        if "offset" not in input_dict:
+        if "offset" not in input_dict:     
             if self.pooling_type == "max":
                 global_feat = feat.max(dim=0, keepdim=True)[0]
             elif self.pooling_type == "avg":
