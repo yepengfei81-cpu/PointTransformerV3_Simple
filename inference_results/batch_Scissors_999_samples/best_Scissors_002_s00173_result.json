@@ -1,0 +1,16 @@
+{
+  "patch_name": "best_Scissors_002_s00173",
+  "pred_position": [
+    0.011797748506069183,
+    0.0004054934252053499,
+    0.009629091247916222
+  ],
+  "gt_position": [
+    0.011843586340546608,
+    0.0003701280802488327,
+    0.009699457325041294
+  ],
+  "error_meters": 9.112189365594244e-05,
+  "error_mm": 0.09112189365594245,
+  "complete_model": "../../touch_processed_data/Scissors/bigpointcloud_002.ply"
+}

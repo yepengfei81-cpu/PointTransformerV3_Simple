@@ -1,0 +1,25 @@
+{
+  "category": "Scissors",
+  "total_samples": 999,
+  "successful_samples": 999,
+  "failed_samples": [],
+  "statistics": {
+    "mean_error_mm": 1.021552408841584,
+    "median_error_mm": 0.8885283023118973,
+    "std_error_mm": 0.5989289768335951,
+    "min_error_mm": 0.09112188854487613,
+    "max_error_mm": 4.940245300531387
+  },
+  "best_sample": {
+    "name": "Scissors_002_s00173",
+    "error_mm": 0.09112188854487613
+  },
+  "worst_sample": {
+    "name": "Scissors_004_s00013",
+    "error_mm": 4.940245300531387
+  },
+  "median_sample": {
+    "name": "Scissors_003_c00191",
+    "error_mm": 0.8885283023118973
+  }
+}
