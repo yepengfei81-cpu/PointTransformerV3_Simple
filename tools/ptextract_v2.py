@@ -9,7 +9,7 @@ import shutil
 
 class PTv3DatasetGenerator:
     """
-    PTv3 数据集生成器（支持混合提取方法）
+    PTv3 数据集生成器（支持混合提取方法 + 全局归一化）
     """
     
     def __init__(self, input_dir, output_dir, category_name, samples_per_bigpcd=200, 
@@ -24,6 +24,11 @@ class PTv3DatasetGenerator:
         # 🔥 混合提取模式
         self.sphere_samples = sphere_samples
         self.cube_samples = cube_samples
+        
+        # 🔥 新增：全局归一化参数（步骤1会计算）
+        self.global_min = None
+        self.global_max = None
+        self.global_scale = None
         
         # 如果指定了混合模式，检查参数
         if sphere_samples is not None and cube_samples is not None:
@@ -45,6 +50,53 @@ class PTv3DatasetGenerator:
         print(f"📁 输出目录: {self.output_dir}")
         print(f"🏷️  类别名称: {self.category_name}")
     
+    def _compute_global_normalization(self, ply_files):
+        """
+        🔥 步骤1：计算全局归一化参数
+        扫描所有大点云，找到全局的 min、max、scale
+        """
+        print("\n" + "="*70)
+        print("🌍 步骤1：计算全局归一化参数")
+        print("="*70)
+        
+        global_min = np.array([np.inf, np.inf, np.inf], dtype=np.float32)
+        global_max = np.array([-np.inf, -np.inf, -np.inf], dtype=np.float32)
+        
+        print(f"📂 扫描 {len(ply_files)} 个点云文件...")
+        
+        for ply_file in tqdm(ply_files, desc="   扫描点云"):
+            try:
+                pcd = o3d.io.read_point_cloud(str(ply_file))
+                coord = np.asarray(pcd.points, dtype=np.float32)
+                
+                if len(coord) == 0:
+                    print(f"   ⚠️  {ply_file.name} 点云为空，跳过")
+                    continue
+                
+                # 更新全局边界
+                global_min = np.minimum(global_min, coord.min(axis=0))
+                global_max = np.maximum(global_max, coord.max(axis=0))
+                
+            except Exception as e:
+                print(f"   ⚠️  加载 {ply_file.name} 失败: {e}")
+                continue
+        
+        # 计算全局尺度
+        global_size = global_max - global_min
+        global_scale = float(global_size.max())
+        
+        # 保存到实例变量
+        self.global_min = global_min
+        self.global_max = global_max
+        self.global_scale = global_scale
+        
+        print("\n✅ 全局归一化参数计算完成:")
+        print(f"   global_min:   [{global_min[0]:.6f}, {global_min[1]:.6f}, {global_min[2]:.6f}]")
+        print(f"   global_max:   [{global_max[0]:.6f}, {global_max[1]:.6f}, {global_max[2]:.6f}]")
+        print(f"   global_size:  [{global_size[0]:.6f}, {global_size[1]:.6f}, {global_size[2]:.6f}]")
+        print(f"   global_scale: {global_scale:.6f}")
+        print("="*70 + "\n")
+    
     def _load_big_pointcloud(self, pcd_path):
         """加载大点云并提取特征"""
         pcd = o3d.io.read_point_cloud(str(pcd_path))
@@ -60,7 +112,7 @@ class PTv3DatasetGenerator:
             global_color = np.ones((len(global_coord), 3), dtype=np.float32) * 0.5
             print(f"⚠️ {pcd_path.name} 没有颜色，使用默认灰色")
         
-        # 计算归一化参数
+        # 计算单个点云的归一化参数（用于半径调整）
         pcd_min = global_coord.min(axis=0)
         pcd_max = global_coord.max(axis=0)
         pcd_size = pcd_max - pcd_min
@@ -150,9 +202,7 @@ class PTv3DatasetGenerator:
     
     def _extract_random_patch(self, global_coord, global_color, pcd_info, radius, method):
         """
-        从大点云中随机提取一个小点云（归一化版本）
-        
-        🔥 新增参数 method，支持动态切换提取方法
+        🔥 步骤2：从大点云中随机提取一个小点云（使用全局归一化）
         """
         max_attempts = 50
         
@@ -166,7 +216,7 @@ class PTv3DatasetGenerator:
         for attempt in range(max_attempts):
             center = np.random.uniform(safe_min, safe_max).astype(np.float32)
             
-            # 🔥 根据 method 参数选择提取方式
+            # 根据 method 参数选择提取方式
             if method == 'sphere':
                 distances = np.linalg.norm(global_coord - center, axis=1)
                 mask = distances < radius
@@ -185,14 +235,13 @@ class PTv3DatasetGenerator:
             # 计算质心
             actual_center = local_points.mean(axis=0).astype(np.float32)
             
-            # 归一化到 [0, 1]
-            gt_position_normalized = (actual_center - pcd_info['min']) / pcd_info['size']
+            # 🔥 步骤2：使用全局归一化参数
+            gt_position_normalized = (actual_center - self.global_min) / self.global_scale
             gt_position_normalized = gt_position_normalized.astype(np.float32)
             
-            local_coord_normalized = (local_points - pcd_info['min']) / pcd_info['size']
+            local_coord_normalized = (local_points - self.global_min) / self.global_scale
             local_coord_normalized = local_coord_normalized.astype(np.float32)
             
-            # 🔥 返回提取方法
             return local_coord_normalized, local_colors.astype(np.float32), gt_position_normalized, radius, method, True
         
         return None, None, None, None, None, False
@@ -262,8 +311,10 @@ class PTv3DatasetGenerator:
         
         pbar = tqdm(extraction_plan, desc=f"   提取样本", leave=False)
         
+        parent_id_str = f"{bigpcd_id:03d}"  # "001", "002", ...
+        
         for i, (method, radius) in enumerate(pbar):
-            # 🔥 使用指定的方法和半径提取
+            # 🔥 使用指定的方法和半径提取（步骤2会用全局参数归一化）
             local_coord, local_color, gt_position, actual_radius, used_method, success = self._extract_random_patch(
                 global_coord, global_color, pcd_info, radius, method
             )
@@ -284,14 +335,17 @@ class PTv3DatasetGenerator:
             else:
                 cube_count += 1
             
-            parent_id_str = f"{bigpcd_id:03d}"  # "001", "002", ...
-
+            # 🔥 步骤2：保存时使用全局归一化参数
             data_dict = {
-                "local_coord": local_coord,
+                "local_coord": local_coord,  # 已用全局参数归一化
                 "local_color": local_color,
-                "gt_position": gt_position,
+                "gt_position": gt_position,  # 已用全局参数归一化
                 
-                # 归一化参数（保持不变）
+                # 🔥 保存全局归一化参数（所有样本相同）
+                "norm_offset": self.global_min,   # 全局 min
+                "norm_scale": self.global_scale,  # 全局 scale
+                
+                # 保留单个点云参数（用于调试和验证）
                 "pcd_min": pcd_info['min'],
                 "pcd_max": pcd_info['max'],
                 "pcd_size": pcd_info['size'],
@@ -305,12 +359,12 @@ class PTv3DatasetGenerator:
                 "category_id": category_id,
                 "bigpcd_name": pcd_path.name,
                 "bigpcd_id": bigpcd_id,
-                "parent_id": parent_id_str,  # 🔥 新增：字符串格式的 parent_id
+                "parent_id": parent_id_str,
                 "sample_id": current_sample_id,
-                "name": f"{self.category_name}_{parent_id_str}_{used_method[0]}{i:05d}",  # 保持不变
+                "name": f"{self.category_name}_{parent_id_str}_{used_method[0]}{i:05d}",
             }
 
-            # 🔥 新增：文件名包含 parent_id
+            # 文件名包含 parent_id
             output_filename = f"patch_{parent_id_str}_{current_sample_id:06d}.pth"
             output_path = self.patches_dir / output_filename
 
@@ -347,7 +401,7 @@ class PTv3DatasetGenerator:
     def generate_dataset(self, category_id=0):
         """生成完整数据集"""
         print(f"\n{'='*70}")
-        print(f"🚀 生成 PTv3 训练数据集")
+        print(f"🚀 生成 PTv3 训练数据集（全局归一化版本）")
         print(f"{'='*70}")
         print(f"   输入目录: {self.input_dir}")
         print(f"   输出目录: {self.output_dir}")
@@ -376,6 +430,10 @@ class PTv3DatasetGenerator:
         for f in ply_files:
             print(f"   - {f.name}")
         
+        # 🔥 步骤1：计算全局归一化参数
+        self._compute_global_normalization(ply_files)
+        
+        # 处理每个大点云
         all_samples = []
         global_sample_id = 0
         
@@ -397,6 +455,12 @@ class PTv3DatasetGenerator:
             'num_bigpcds': len(ply_files),
             'samples_per_bigpcd': self.samples_per_bigpcd,
             'initial_radius': float(self.radius),
+            # 🔥 新增：保存全局归一化参数
+            'global_normalization': {
+                'global_min': self.global_min.tolist(),
+                'global_max': self.global_max.tolist(),
+                'global_scale': float(self.global_scale),
+            }
         }
         
         if self.mixed_mode:
@@ -422,7 +486,12 @@ class PTv3DatasetGenerator:
             print(f"   ⚪ 球体样本: {sphere_total}")
             print(f"   🟦 立方体样本: {cube_total}")
         
-        print(f"📁 输出目录: {self.category_dir}")
+        print(f"\n🌍 全局归一化参数:")
+        print(f"   global_min:   {self.global_min}")
+        print(f"   global_max:   {self.global_max}")
+        print(f"   global_scale: {self.global_scale:.6f}")
+        
+        print(f"\n📁 输出目录: {self.category_dir}")
         print(f"📁 样本目录: {self.patches_dir}")
         print(f"📄 信息文件: {info_path}")
         print(f"{'='*70}\n")
@@ -485,9 +554,10 @@ def verify_single_sample(pth_path):
     
     required_keys = [
         "local_coord", "local_color", "gt_position",
+        "norm_offset", "norm_scale",  # 🔥 新增检查
         "pcd_min", "pcd_max", "pcd_size",
         "extraction_method", "extraction_radius",
-        "category", "category_id", "bigpcd_name", "bigpcd_id", "sample_id", "name"
+        "category", "category_id", "bigpcd_name", "bigpcd_id", "parent_id", "sample_id", "name"
     ]
     
     print("字段检查:")
@@ -513,8 +583,14 @@ def verify_single_sample(pth_path):
         print(f"   Method: {data_dict['extraction_method']}")
         print(f"   Radius: {data_dict['extraction_radius']:.6f}")
     
+    # 🔥 新增：显示全局归一化参数
+    if 'norm_offset' in data_dict and 'norm_scale' in data_dict:
+        print(f"\n🌍 全局归一化参数:")
+        print(f"   norm_offset (global_min): {data_dict['norm_offset']}")
+        print(f"   norm_scale (global_scale): {data_dict['norm_scale']:.6f}")
+    
     if 'pcd_min' in data_dict:
-        print(f"\n归一化参数:")
+        print(f"\n📦 单个点云参数（调试用）:")
         print(f"   pcd_min:  {data_dict['pcd_min']}")
         print(f"   pcd_max:  {data_dict['pcd_max']}")
         print(f"   pcd_size: {data_dict['pcd_size']}")
@@ -553,7 +629,7 @@ def verify_single_sample(pth_path):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="生成 PTv3 训练数据集（支持混合提取）")
+    parser = argparse.ArgumentParser(description="生成 PTv3 训练数据集（支持混合提取 + 全局归一化）")
     
     parser.add_argument("--input_dir", type=str, default=None,
                        help="输入目录（包含原始 .ply 文件）")
@@ -630,6 +706,6 @@ if __name__ == "__main__":
         print("\n2. 🔥 混合模式（球体50个 + 立方体50个）:")
         print("   python script.py --input_dir scans --output_dir data_root --category Scissors --sphere_samples 50 --cube_samples 50")
         print("\n3. 验证样本:")
-        print("   python script.py --verify data_root/Scissors/patches/patch_000001.pth")
+        print("   python script.py --verify data_root/Scissors/patches/patch_001_000001.pth")
         print("\n4. 合并类别:")
         print("   python script.py --merge Scissors Cup Avocado --merge_dir data_root")
