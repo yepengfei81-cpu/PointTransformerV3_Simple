@@ -23,7 +23,7 @@ def test_model_forward():
         print("   ⚠️  Warning: CUDA not available, but PTv3 requires GPU!")
         print("   ⚠️  This test will likely fail on CPU.")
     
-    cfg = Config.fromfile("/root/autodl-tmp/Pointcept/configs/s3dis/semseg-pt-v3m1-gelsight.py")
+    cfg = Config.fromfile("/home/ypf/PointTransformerV3_Simple/configs/s3dis/semseg-pt-v3m1-gelsight.py")
     
     # Build dataset
     train_dataset = build_dataset(cfg.data.train)

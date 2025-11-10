@@ -16,8 +16,8 @@ def test_offset():
     print("Testing Offset Field...")
     print("=" * 80)
     
-    # cfg = Config.fromfile("/root/autodl-tmp/Pointcept/configs/s3dis/semseg-pt-v3m1-gelsight.py")
-    cfg = Config.fromfile("/root/autodl-tmp/Pointcept/configs/s3dis/semseg-pt-v3m1-1-rpe.py")
+    # cfg = Config.fromfile("/home/ypf/PointTransformerV3_Simple/configs/s3dis/semseg-pt-v3m1-gelsight.py")
+    cfg = Config.fromfile("/home/ypf/PointTransformerV3_Simple/configs/s3dis/semseg-pt-v3m1-1-rpe.py")
     train_dataset = build_dataset(cfg.data.train)
     
     print(f"\n✅ Dataset loaded")

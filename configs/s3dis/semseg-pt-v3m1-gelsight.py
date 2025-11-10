@@ -74,7 +74,7 @@ scheduler = dict(
 param_dicts = [dict(keyword="block", lr=0.0001)]
 
 dataset_type = "ContactPositionDataset"
-data_root = "/root/autodl-tmp/touch_processed_data/"
+data_root = "/home/ypf/touch_processed_data/"
 
 data = dict(
     ignore_index=-1,
