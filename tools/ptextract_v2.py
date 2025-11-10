@@ -284,18 +284,19 @@ class PTv3DatasetGenerator:
             else:
                 cube_count += 1
             
-            # 构建 data_dict
+            parent_id_str = f"{bigpcd_id:03d}"  # "001", "002", ...
+
             data_dict = {
                 "local_coord": local_coord,
                 "local_color": local_color,
                 "gt_position": gt_position,
                 
-                # 归一化参数
+                # 归一化参数（保持不变）
                 "pcd_min": pcd_info['min'],
                 "pcd_max": pcd_info['max'],
                 "pcd_size": pcd_info['size'],
                 
-                # 🔥 保存提取方法
+                # 提取方法
                 "extraction_method": used_method,
                 "extraction_radius": float(actual_radius),
                 
@@ -304,12 +305,15 @@ class PTv3DatasetGenerator:
                 "category_id": category_id,
                 "bigpcd_name": pcd_path.name,
                 "bigpcd_id": bigpcd_id,
+                "parent_id": parent_id_str,  # 🔥 新增：字符串格式的 parent_id
                 "sample_id": current_sample_id,
-                "name": f"{self.category_name}_{bigpcd_id:03d}_{used_method[0]}{i:05d}",  # 🔥 名称包含方法标识
+                "name": f"{self.category_name}_{parent_id_str}_{used_method[0]}{i:05d}",  # 保持不变
             }
-            
-            # 保存
-            output_path = self.patches_dir / f"patch_{current_sample_id:06d}.pth"
+
+            # 🔥 新增：文件名包含 parent_id
+            output_filename = f"patch_{parent_id_str}_{current_sample_id:06d}.pth"
+            output_path = self.patches_dir / output_filename
+
             torch.save(data_dict, output_path)
             
             samples.append({

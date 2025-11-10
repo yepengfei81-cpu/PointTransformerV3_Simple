@@ -18,3 +18,4 @@ outputs/
 */.DS_Store
 **/*.out
 Dockerfile
+inference_results/
