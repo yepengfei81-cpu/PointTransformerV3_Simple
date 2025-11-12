@@ -83,6 +83,8 @@ data = dict(
         type=dataset_type,
         split="train",
         data_root=data_root,
+        parent_pcd_root=data_root,
+        max_cache_size=10,
         loop=epoch // eval_epoch,
         transform=[
             dict(type="CenterShift", apply_z=True),
@@ -118,6 +120,8 @@ data = dict(
         type=dataset_type,
         split="val",
         data_root=data_root,
+        parent_pcd_root=data_root,
+        max_cache_size=10,
         transform=[
             dict(type="CenterShift", apply_z=True),
             dict(
@@ -143,6 +147,8 @@ data = dict(
         type=dataset_type,
         split="test",
         data_root=data_root,
+        parent_pcd_root=data_root,
+        max_cache_size=10,
         transform=[
             dict(type="CenterShift", apply_z=True),
             dict(type="NormalizeColor"),
