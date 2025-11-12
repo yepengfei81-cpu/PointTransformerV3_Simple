@@ -74,7 +74,7 @@ param_dicts = [dict(keyword="block", lr=0.0003)]
 
 # dataset settings
 dataset_type = "S3DISDataset"
-data_root = "/root/autodl-tmp/processed_data/"
+data_root = "/home/ypf/processed_data/"
 
 data = dict(
     num_classes=13,

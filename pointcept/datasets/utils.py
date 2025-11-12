@@ -74,17 +74,36 @@ def point_collate_fn(batch, mix_prob=0):
     assert isinstance(
         batch[0], Mapping
     )  # currently, only support input_dict, rather than input_list
-    stack_fields = {"gt_position"}
+    stack_fields = {"gt_position", "category_id", "norm_offset", "norm_scale"}
+    parent_fields = {"parent_coord", "parent_color"}
     special_data = {field: [] for field in stack_fields}
+    parent_data = {}
     clean_batch = []
-    
-    for data_dict in batch:
+
+    for i, data_dict in enumerate(batch):    
         clean_dict = {}
+        
         for key, value in data_dict.items():
             if key in stack_fields:
+                if not isinstance(value, torch.Tensor):
+                    value = torch.as_tensor(value)
                 special_data[key].append(value)
+            elif key in parent_fields:
+                if not isinstance(value, torch.Tensor):
+                    value = torch.as_tensor(value)
+                if key not in parent_data:
+                    parent_data[key] = []
+                parent_data[key].append(value)
+                if key == "parent_coord":
+                    if "batch" not in parent_data:
+                        parent_data["batch"] = []
+                    n_points = value.shape[0]
+                    parent_data["batch"].append(
+                        torch.full((n_points,), i, dtype=torch.int32)
+                    )
             else:
                 clean_dict[key] = value
+        
         clean_batch.append(clean_dict)
     
     batch = collate_fn(clean_batch)
@@ -92,6 +111,10 @@ def point_collate_fn(batch, mix_prob=0):
     for field, values in special_data.items():
         if values:
             batch[field] = torch.stack(values)
+    
+    for field, values in parent_data.items():
+        if values:
+            batch[field] = torch.cat(values, dim=0)
     if random.random() < mix_prob:
         if "instance" in batch.keys():
             offset = batch["offset"]
