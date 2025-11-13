@@ -498,8 +498,9 @@ class ContactPositionDataset(Dataset):
         self,
         split="train",
         data_root="data/touch_processed_data",
-        parent_pcd_root=None,  # 🔥 新增：父点云根目录
+        parent_pcd_root=None,
         transform=None,
+        parent_transform=None,
         test_mode=False,
         test_cfg=None,
         loop=1,
@@ -518,7 +519,8 @@ class ContactPositionDataset(Dataset):
         
         self.data_root = data_root
         self.split = split
-        self.transform = Compose(transform)
+        self.transform = Compose(transform) if transform else None
+        self.parent_transform = Compose(parent_transform) if parent_transform is not None else None
         self.loop = loop if not test_mode else 1
         self.test_mode = test_mode
         self.test_cfg = test_cfg if test_mode else None
@@ -657,8 +659,8 @@ class ContactPositionDataset(Dataset):
         parent_coord_raw = parent_data["parent_coord"]  # 原始 mm 坐标
         parent_color = parent_data["parent_color"]
         
-        norm_offset = data_dict["norm_offset"].astype(np.float32)  # 全局 min
-        norm_scale = float(data_dict["norm_scale"])                # 全局 scale
+        norm_offset = data_dict["norm_offset"].astype(np.float32)  # (3,)
+        norm_scale = data_dict["norm_scale"].astype(np.float32)    # (3,)              # 全局 scale
         
         parent_coord_norm = (parent_coord_raw - norm_offset) / norm_scale
         
@@ -674,33 +676,54 @@ class ContactPositionDataset(Dataset):
     
     def prepare_train_data(self, idx):
         data_dict = self.get_data(idx)
-        # to protect parent data from being transformed
-        parent_coord = data_dict.pop("parent_coord")
-        parent_color = data_dict.pop("parent_color")
+        
+        parent_dict = {
+            "coord": data_dict.pop("parent_coord"),  # (N_parent, 3)
+            "color": data_dict.pop("parent_color"),  # (N_parent, 3)
+        }
+        
         norm_offset = data_dict.pop("norm_offset")
-        norm_scale = data_dict.pop("norm_scale")        
-        data_dict = self.transform(data_dict)
-        data_dict["parent_coord"] = parent_coord
-        data_dict["parent_color"] = parent_color
+        norm_scale = data_dict.pop("norm_scale")
+
+        if self.transform is not None:
+            data_dict = self.transform(data_dict)
+        
+        if self.parent_transform is not None:
+            parent_dict = self.parent_transform(parent_dict)
+
+        data_dict["parent_coord"] = parent_dict["coord"]
+        data_dict["parent_color"] = parent_dict.get("color", parent_dict.get("feat"))
+        
+        if "grid_coord" in parent_dict:
+            data_dict["parent_grid_coord"] = parent_dict["grid_coord"]
+
+        if "grid_size" in parent_dict:
+            data_dict["parent_grid_size"] = parent_dict["grid_size"]        
+        
         data_dict["norm_offset"] = norm_offset
         data_dict["norm_scale"] = norm_scale
-
+        
         return data_dict
     
     def prepare_test_data(self, idx):
         data_dict = self.get_data(idx)
-        # to protect parent data from being transformed
-        parent_coord = data_dict.pop("parent_coord")
-        parent_color = data_dict.pop("parent_color")
+        parent_dict = {
+            "coord": data_dict.pop("parent_coord"),
+            "color": data_dict.pop("parent_color"),
+        }
+        
         norm_offset = data_dict.pop("norm_offset")
-        norm_scale = data_dict.pop("norm_scale")        
-        data_dict = self.transform(data_dict)
+        norm_scale = data_dict.pop("norm_scale")
+        
+        if self.transform is not None:
+            data_dict = self.transform(data_dict)
+        
+        if self.parent_transform is not None:
+            parent_dict = self.parent_transform(parent_dict)
         
         result_dict = dict(
             gt_position=data_dict.pop("gt_position"),
             name=data_dict.pop("name"),
-            parent_coord=parent_coord,
-            parent_color=parent_color,
             norm_offset=norm_offset,
             norm_scale=norm_scale,
         )
@@ -708,13 +731,33 @@ class ContactPositionDataset(Dataset):
         if "category_id" in data_dict:
             result_dict["category_id"] = data_dict.pop("category_id")
         
+        parent_coord = parent_dict["coord"]
+        parent_color = parent_dict.get("color", parent_dict.get("feat"))
+        
+        parent_grid_coord = None
+        if "grid_coord" in parent_dict:
+            parent_grid_coord = parent_dict["grid_coord"]
+        
+        parent_grid_size = None
+        if "grid_size" in parent_dict:
+            parent_grid_size = parent_dict["grid_size"]
+        
         if len(self.aug_transform) == 0:
             data_dict["index"] = np.arange(data_dict["coord"].shape[0])
             data_dict = self.post_transform(data_dict)
-            data_dict["parent_coord"] = torch.from_numpy(parent_coord)
-            data_dict["parent_color"] = torch.from_numpy(parent_color)
-            data_dict["norm_offset"] = torch.from_numpy(norm_offset)
-            data_dict["norm_scale"] = torch.tensor(norm_scale)            
+            
+            data_dict["parent_coord"] = parent_coord
+            data_dict["parent_color"] = parent_color
+            
+            if parent_grid_coord is not None:
+                data_dict["parent_grid_coord"] = parent_grid_coord
+            
+            if parent_grid_size is not None:
+                data_dict["parent_grid_size"] = parent_grid_size
+            
+            data_dict["norm_offset"] = torch.from_numpy(norm_offset) if isinstance(norm_offset, np.ndarray) else norm_offset
+            data_dict["norm_scale"] = torch.tensor(norm_scale) if not isinstance(norm_scale, torch.Tensor) else norm_scale
+            
             result_dict["fragment_list"] = [data_dict]
         else:
             fragment_list = []
@@ -722,10 +765,19 @@ class ContactPositionDataset(Dataset):
                 aug_data = aug(deepcopy(data_dict))
                 aug_data["index"] = np.arange(aug_data["coord"].shape[0])
                 aug_data = self.post_transform(aug_data)
-                aug_data["parent_coord"] = torch.from_numpy(parent_coord)
-                aug_data["parent_color"] = torch.from_numpy(parent_color)
-                aug_data["norm_offset"] = torch.from_numpy(norm_offset)
-                aug_data["norm_scale"] = torch.tensor(norm_scale)                
+                
+                aug_data["parent_coord"] = parent_coord
+                aug_data["parent_color"] = parent_color
+                
+                if parent_grid_coord is not None:
+                    aug_data["parent_grid_coord"] = parent_grid_coord
+                
+                if parent_grid_size is not None:
+                    aug_data["parent_grid_size"] = parent_grid_size
+                
+                aug_data["norm_offset"] = torch.from_numpy(norm_offset) if isinstance(norm_offset, np.ndarray) else norm_offset
+                aug_data["norm_scale"] = torch.tensor(norm_scale) if not isinstance(norm_scale, torch.Tensor) else norm_scale
+                
                 fragment_list.append(aug_data)
             result_dict["fragment_list"] = fragment_list
         

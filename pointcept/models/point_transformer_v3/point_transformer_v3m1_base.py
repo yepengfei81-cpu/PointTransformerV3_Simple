@@ -152,7 +152,7 @@ class SerializedAttention(PointModule):
                         + (bincount[i] % self.patch_size) : _offset_pad[i + 1]
                         - self.patch_size
                     ]
-                pad[_offset_pad[i] : _offset_pad[i + 1]] -= _offset_pad[i] - _offset[i]
+                pad[_offset_pad[i] : _offset_pad[i + 1]] -= _offset_pad[i] - _offset[i]              
                 cu_seqlens.append(
                     torch.arange(
                         _offset_pad[i],
@@ -162,6 +162,7 @@ class SerializedAttention(PointModule):
                         device=offset.device,
                     )
                 )
+                print(f"   Generated {len(cu_seqlens[-1])} seqlens")
             point[pad_key] = pad
             point[unpad_key] = unpad
             point[cu_seqlens_key] = nn.functional.pad(
@@ -169,7 +170,7 @@ class SerializedAttention(PointModule):
             )
         return point[pad_key], point[unpad_key], point[cu_seqlens_key]
 
-    def forward(self, point):
+    def forward(self, point):      
         if not self.enable_flash:
             self.patch_size = min(
                 offset2bincount(point.offset).min().tolist(), self.patch_size_max

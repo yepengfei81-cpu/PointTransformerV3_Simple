@@ -55,7 +55,7 @@ class Point(Dict):
         Point Cloud Serialization
 
         relay on ["grid_coord" or "coord" + "grid_size", "batch", "feat"]
-        """
+        """       
         self["order"] = order
         assert "batch" in self.keys()
         if "grid_coord" not in self.keys():

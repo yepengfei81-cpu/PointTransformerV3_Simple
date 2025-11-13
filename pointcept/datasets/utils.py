@@ -71,11 +71,16 @@ def collate_fn(batch):
 
 
 def point_collate_fn(batch, mix_prob=0):
-    assert isinstance(
-        batch[0], Mapping
-    )  # currently, only support input_dict, rather than input_list
+    assert isinstance(batch[0], Mapping), "Only dict input is supported"
+    
     stack_fields = {"gt_position", "category_id", "norm_offset", "norm_scale"}
-    parent_fields = {"parent_coord", "parent_color"}
+    parent_fields = {
+        "parent_coord", 
+        "parent_color", 
+        "parent_grid_coord", 
+        "parent_grid_size"
+    }
+    
     special_data = {field: [] for field in stack_fields}
     parent_data = {}
     clean_batch = []
@@ -88,17 +93,20 @@ def point_collate_fn(batch, mix_prob=0):
                 if not isinstance(value, torch.Tensor):
                     value = torch.as_tensor(value)
                 special_data[key].append(value)
+                
             elif key in parent_fields:
                 if not isinstance(value, torch.Tensor):
                     value = torch.as_tensor(value)
+                
                 if key not in parent_data:
                     parent_data[key] = []
                 parent_data[key].append(value)
+                
                 if key == "parent_coord":
-                    if "batch" not in parent_data:
-                        parent_data["batch"] = []
+                    if "parent_batch" not in parent_data:
+                        parent_data["parent_batch"] = []
                     n_points = value.shape[0]
-                    parent_data["batch"].append(
+                    parent_data["parent_batch"].append(
                         torch.full((n_points,), i, dtype=torch.int32)
                     )
             else:
@@ -114,7 +122,19 @@ def point_collate_fn(batch, mix_prob=0):
     
     for field, values in parent_data.items():
         if values:
-            batch[field] = torch.cat(values, dim=0)
+            if field == "parent_grid_size":
+                batch[field] = values[0] if isinstance(values[0], (int, float)) else values[0].item()
+            else:
+                batch[field] = torch.cat(values, dim=0)
+    
+    if "parent_batch" in parent_data and parent_data["parent_batch"]:
+        parent_batch = batch["parent_batch"]  # (M_total,)
+        
+        counts = torch.bincount(parent_batch.long())  # (batch_size,)
+        parent_offset = torch.cumsum(counts, dim=0)  # (batch_size,)
+        
+        batch["parent_offset"] = parent_offset
+    
     if random.random() < mix_prob:
         if "instance" in batch.keys():
             offset = batch["offset"]
@@ -127,12 +147,14 @@ def point_collate_fn(batch, mix_prob=0):
                     mask = batch["instance"][start : offset[i]] != -1
                     batch["instance"][start : offset[i]] += num_instance * mask
                 start = offset[i]
+        
         offset_assets = [asset for asset in batch.keys() if "offset" in asset]
         for offset_asset in offset_assets:
             batch[offset_asset] = torch.cat(
                 [batch[offset_asset][1:-1:2], batch[offset_asset][-1].unsqueeze(0)],
                 dim=0,
             )
+        
         if "img_num" in batch.keys():
             n = batch["img_num"].shape[0]
             num_pairs = n // 2
@@ -149,6 +171,7 @@ def point_collate_fn(batch, mix_prob=0):
                 else:
                     result = summed_pairs
                 batch["img_num"] = result
+        
         correspondence_assets = [
             asset for asset in batch.keys() if "correspondence" in asset
         ]
@@ -176,6 +199,7 @@ def point_collate_fn(batch, mix_prob=0):
                     start:N, -v:
                 ]
             batch[correspondence_asset] = batch_correspondence_mix
+    
     return batch
 
 

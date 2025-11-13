@@ -28,7 +28,7 @@ class PTv3DatasetGenerator:
         # 🔥 新增：全局归一化参数（步骤1会计算）
         self.global_min = None
         self.global_max = None
-        self.global_scale = None
+        self.global_range = None
         
         # 如果指定了混合模式，检查参数
         if sphere_samples is not None and cube_samples is not None:
@@ -52,8 +52,7 @@ class PTv3DatasetGenerator:
     
     def _compute_global_normalization(self, ply_files):
         """
-        🔥 步骤1：计算全局归一化参数
-        扫描所有大点云，找到全局的 min、max、scale
+        🌍 扫描所有父点云，计算全局边界
         """
         print("\n" + "="*70)
         print("🌍 步骤1：计算全局归一化参数")
@@ -81,20 +80,18 @@ class PTv3DatasetGenerator:
                 print(f"   ⚠️  加载 {ply_file.name} 失败: {e}")
                 continue
         
-        # 计算全局尺度
-        global_size = global_max - global_min
-        global_scale = float(global_size.max())
+        # 🔥 计算全局范围
+        global_range = global_max - global_min
         
-        # 保存到实例变量
+        # 🔥 保存到实例变量
         self.global_min = global_min
         self.global_max = global_max
-        self.global_scale = global_scale
+        self.global_range = global_range  # (3,)
         
         print("\n✅ 全局归一化参数计算完成:")
         print(f"   global_min:   [{global_min[0]:.6f}, {global_min[1]:.6f}, {global_min[2]:.6f}]")
         print(f"   global_max:   [{global_max[0]:.6f}, {global_max[1]:.6f}, {global_max[2]:.6f}]")
-        print(f"   global_size:  [{global_size[0]:.6f}, {global_size[1]:.6f}, {global_size[2]:.6f}]")
-        print(f"   global_scale: {global_scale:.6f}")
+        print(f"   global_range: [{global_range[0]:.6f}, {global_range[1]:.6f}, {global_range[2]:.6f}]")  # 🔥 打印 range
         print("="*70 + "\n")
     
     def _load_big_pointcloud(self, pcd_path):
@@ -232,14 +229,14 @@ class PTv3DatasetGenerator:
             local_points = global_coord[indices]
             local_colors = global_color[indices]
             
-            # 计算质心
             actual_center = local_points.mean(axis=0).astype(np.float32)
             
-            # 🔥 步骤2：使用全局归一化参数
-            gt_position_normalized = (actual_center - self.global_min) / self.global_scale
-            gt_position_normalized = gt_position_normalized.astype(np.float32)
+            # 🔥 使用全局参数归一化
+            gt_position_normalized = (actual_center - self.global_min) / self.global_range
+            local_coord_normalized = (local_points - self.global_min) / self.global_range
             
-            local_coord_normalized = (local_points - self.global_min) / self.global_scale
+            # 确保类型正确
+            gt_position_normalized = gt_position_normalized.astype(np.float32)
             local_coord_normalized = local_coord_normalized.astype(np.float32)
             
             return local_coord_normalized, local_colors.astype(np.float32), gt_position_normalized, radius, method, True
@@ -343,7 +340,7 @@ class PTv3DatasetGenerator:
                 
                 # 🔥 保存全局归一化参数（所有样本相同）
                 "norm_offset": self.global_min,   # 全局 min
-                "norm_scale": self.global_scale,  # 全局 scale
+                "norm_scale": self.global_range,  # 全局 scale
                 
                 # 保留单个点云参数（用于调试和验证）
                 "pcd_min": pcd_info['min'],
@@ -455,11 +452,12 @@ class PTv3DatasetGenerator:
             'num_bigpcds': len(ply_files),
             'samples_per_bigpcd': self.samples_per_bigpcd,
             'initial_radius': float(self.radius),
-            # 🔥 新增：保存全局归一化参数
+            
+            # 🔥 保存全局归一化参数
             'global_normalization': {
                 'global_min': self.global_min.tolist(),
                 'global_max': self.global_max.tolist(),
-                'global_scale': float(self.global_scale),
+                'global_range': self.global_range.tolist(),  # 🔥 保存 range 而不是 scale
             }
         }
         
@@ -489,7 +487,7 @@ class PTv3DatasetGenerator:
         print(f"\n🌍 全局归一化参数:")
         print(f"   global_min:   {self.global_min}")
         print(f"   global_max:   {self.global_max}")
-        print(f"   global_scale: {self.global_scale:.6f}")
+        print(f"   global_range: {self.global_range}")
         
         print(f"\n📁 输出目录: {self.category_dir}")
         print(f"📁 样本目录: {self.patches_dir}")
@@ -586,8 +584,15 @@ def verify_single_sample(pth_path):
     # 🔥 新增：显示全局归一化参数
     if 'norm_offset' in data_dict and 'norm_scale' in data_dict:
         print(f"\n🌍 全局归一化参数:")
-        print(f"   norm_offset (global_min): {data_dict['norm_offset']}")
-        print(f"   norm_scale (global_scale): {data_dict['norm_scale']:.6f}")
+        norm_offset = data_dict['norm_offset']
+        norm_scale = data_dict['norm_scale']
+        
+        print(f"   norm_offset (global_min): {norm_offset}")
+        
+        # 🔥 检查 norm_scale 的形状
+        if isinstance(norm_scale, np.ndarray):
+            if norm_scale.shape == (3,):
+                print(f"   norm_scale (global_range): {norm_scale}")  # ✅ 正确
     
     if 'pcd_min' in data_dict:
         print(f"\n📦 单个点云参数（调试用）:")

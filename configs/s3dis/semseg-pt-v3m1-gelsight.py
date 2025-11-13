@@ -57,7 +57,10 @@ model = dict(
     #     dict(type="MSELoss", loss_weight=0.5),
     # ],
     freeze_backbone=False,
-    pooling_type="attention",    
+    pooling_type="attention",  
+    use_parent_cloud=True,
+    parent_backbone=None, # shared backbone
+    fusion_type="cross_attention",  # "concat" | "cross_attention"  
 )
 
 epoch = 500
@@ -114,6 +117,17 @@ data = dict(
                 # offset_keys_dict={},
             ),
         ],
+        parent_transform=[
+            dict(
+                type="GridSample",
+                grid_size=0.002,  # 与局部点云一致
+                hash_type="fnv",
+                mode="train",
+                return_grid_coord=True,
+            ),
+            dict(type="NormalizeColor"),
+            dict(type="ToTensor"),
+        ],        
         test_mode=False,
     ),
     val=dict(
@@ -141,6 +155,17 @@ data = dict(
                 # offset_keys_dict={},
             ),
         ],
+        parent_transform=[
+            dict(
+                type="GridSample",
+                grid_size=0.002,
+                hash_type="fnv",
+                mode="train",
+                return_grid_coord=True,
+            ),
+            dict(type="NormalizeColor"),
+            dict(type="ToTensor"),
+        ],        
         test_mode=False,
     ),
     test=dict(
@@ -153,6 +178,17 @@ data = dict(
             dict(type="CenterShift", apply_z=True),
             dict(type="NormalizeColor"),
         ],
+        parent_transform=[
+            dict(
+                type="GridSample",
+                grid_size=0.002,
+                hash_type="fnv",
+                mode="train",
+                return_grid_coord=True,
+            ),
+            dict(type="NormalizeColor"),
+            dict(type="ToTensor"),
+        ],           
         test_mode=True,
         test_cfg=dict(
             voxelize=dict(

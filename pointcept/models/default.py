@@ -7,7 +7,7 @@ from collections import OrderedDict
 
 from pointcept.models.losses import build_criteria
 from pointcept.models.utils.structure import Point
-from pointcept.models.utils import offset2batch
+from pointcept.models.utils import offset2batch, batch2offset
 from .builder import MODELS, build_model
 
 
@@ -50,26 +50,46 @@ class ContactPositionRegressor(nn.Module):
         criteria=None,
         freeze_backbone=False,
         pooling_type="attention",  # "max" | "avg" | "attention"
+        parent_backbone=None,
+        fusion_type="concat",  # "concat" | "cross_attention"
+        use_parent_cloud=True,
     ):
         super().__init__()
         
         self.backbone = build_model(backbone)
+        self.freeze_backbone = freeze_backbone
         # self.criteria = build_criteria(criteria)
         self.criterion_smooth_l1 = nn.SmoothL1Loss()
         self.criterion_mse = nn.MSELoss()
-        #        
-        self.freeze_backbone = freeze_backbone
         self.use_category_condition = use_category_condition
-        
+        self.use_parent_cloud = use_parent_cloud
+        self.fusion_type = fusion_type           
+        # construct parent point cloud backbone 
+        if self.use_parent_cloud:
+            if parent_backbone is not None:
+                self.parent_backbone = build_model(parent_backbone)
+                if freeze_backbone:
+                    for p in self.parent_backbone.parameters():
+                        p.requires_grad = False
+            else:
+                self.parent_backbone = self.backbone  # share weights
+    
         if self.freeze_backbone:
             for p in self.backbone.parameters():
                 p.requires_grad = False
-        
+
+        if use_parent_cloud and fusion_type == "concat":
+            fusion_dim = backbone_out_channels * 2
+        elif use_parent_cloud and fusion_type == "cross_attention":
+            fusion_dim = backbone_out_channels
+        else:
+            fusion_dim = backbone_out_channels
+
         if use_category_condition:
             self.category_embedding = nn.Embedding(num_classes, category_emb_dim)
-            regression_input_dim = backbone_out_channels + category_emb_dim
+            regression_input_dim = fusion_dim + category_emb_dim
         else:
-            regression_input_dim = backbone_out_channels
+            regression_input_dim = fusion_dim
         
         # Pooling
         self.pooling_type = pooling_type
@@ -79,7 +99,21 @@ class ContactPositionRegressor(nn.Module):
                 nn.ReLU(inplace=True),
                 nn.Linear(backbone_out_channels // 4, 1),
             )
-        
+            if self.use_parent_cloud:
+                self.parent_attention_pool = nn.Sequential(
+                    nn.Linear(backbone_out_channels, backbone_out_channels // 4),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(backbone_out_channels // 4, 1),
+                )            
+
+        # Cross-attention fusion
+        if self.use_parent_cloud and self.fusion_type == "cross_attention":
+            self.cross_attention = nn.MultiheadAttention(
+                embed_dim=backbone_out_channels,
+                num_heads=8,
+                batch_first=True,
+            )        
+
         self.regression_head = nn.Sequential(
             nn.Linear(regression_input_dim, backbone_out_channels // 2),
             nn.LayerNorm(backbone_out_channels // 2),
@@ -92,53 +126,133 @@ class ContactPositionRegressor(nn.Module):
             nn.Dropout(0.2),
 
             nn.Linear(backbone_out_channels // 4, num_outputs),
+            nn.Sigmoid()
         )
-    
-    def forward(self, input_dict, return_point=False):
-        point = Point(input_dict)
-        point = self.backbone(point)
+
+    # Modular feature extraction
+    def extract_features(self, point_dict, is_parent=False):
+        if is_parent and self.use_parent_cloud:
+            backbone = self.parent_backbone
+            attention_pool = self.parent_attention_pool if self.pooling_type == "attention" else None
+        else:
+            backbone = self.backbone
+            attention_pool = self.attention_pool if self.pooling_type == "attention" else None
+        
+        point = Point(point_dict)
+        
+        point = backbone(point)
         
         if isinstance(point, Point):
             while "pooling_parent" in point.keys():
                 assert "pooling_inverse" in point.keys()
                 parent = point.pop("pooling_parent")
                 inverse = point.pop("pooling_inverse")
-                # parent.feat = torch.cat([parent.feat, point.feat[inverse]], dim=-1)
                 parent.feat = point.feat[inverse]
                 point = parent
-            feat = point.feat
+            feat = point.feat  # (N, C)
         else:
             feat = point
         
-        if "offset" not in input_dict:     
+        if "offset" not in point_dict:
             if self.pooling_type == "max":
                 global_feat = feat.max(dim=0, keepdim=True)[0]
             elif self.pooling_type == "avg":
                 global_feat = feat.mean(dim=0, keepdim=True)
             elif self.pooling_type == "attention":
-                attn_weights = self.attention_pool(feat).softmax(dim=0)
+                attn_weights = attention_pool(feat).softmax(dim=0)
                 global_feat = (feat * attn_weights).sum(dim=0, keepdim=True)
+            else:
+                raise ValueError(f"Unknown pooling_type: {self.pooling_type}")
         else:
-            offset = input_dict["offset"]
+            offset = point_dict["offset"]
             batch = offset2batch(offset)
-            batch_size = offset.shape[0]
+            batch_size = batch.max().item() + 1 if batch.numel() > 0 else 0 
             global_feat = []
             
             for i in range(batch_size):
                 mask = (batch == i)
                 sample_feat = feat[mask]
                 
-                if self.pooling_type == "max":
-                    sample_global = sample_feat.max(dim=0)[0]
-                elif self.pooling_type == "avg":
-                    sample_global = sample_feat.mean(dim=0)
-                elif self.pooling_type == "attention":
-                    attn_weights = self.attention_pool(sample_feat).softmax(dim=0)
-                    sample_global = (sample_feat * attn_weights).sum(dim=0)
+                if sample_feat.shape[0] == 0:
+                    import warnings
+                    warnings.warn(f"Empty batch at index {i}")
+                    sample_global = torch.zeros(feat.shape[1], device=feat.device)
+                else:
+                    if self.pooling_type == "max":
+                        sample_global = sample_feat.max(dim=0)[0]
+                    elif self.pooling_type == "avg":
+                        sample_global = sample_feat.mean(dim=0)
+                    elif self.pooling_type == "attention":
+                        attn_weights = attention_pool(sample_feat).softmax(dim=0)
+                        sample_global = (sample_feat * attn_weights).sum(dim=0)
+                    else:
+                        raise ValueError(f"Unknown pooling_type: {self.pooling_type}")
                 
                 global_feat.append(sample_global)
-            
             global_feat = torch.stack(global_feat)  # (batch_size, C)
+        
+        return global_feat
+            
+    def forward(self, input_dict, return_point=False):       
+        local_dict = {
+            "coord": input_dict["coord"],
+            "feat": input_dict.get("feat", input_dict.get("color", input_dict["coord"])),
+            "grid_coord": input_dict["grid_coord"],
+        }
+        
+        if "grid_size" in input_dict:
+            local_dict["grid_size"] = input_dict["grid_size"]
+        
+        if "offset" in input_dict:
+            local_dict["offset"] = input_dict["offset"]
+        
+        local_feat = self.extract_features(local_dict, is_parent=False)  # (batch_size, C)
+        
+        parent_feat = None
+        if self.use_parent_cloud and "parent_coord" in input_dict:
+            parent_dict = {
+                "coord": input_dict["parent_coord"],
+                "feat": input_dict.get("parent_color", input_dict["parent_coord"]),
+            }
+            
+            if "parent_grid_coord" in input_dict:
+                parent_dict["grid_coord"] = input_dict["parent_grid_coord"]
+            else:
+                raise KeyError(
+                    "Missing 'parent_grid_coord' in input_dict!\n"
+                    "Ensure parent_transform includes GridSample with return_grid_coord=True"
+                )
+            
+            if "parent_grid_size" in input_dict:
+                parent_dict["grid_size"] = input_dict["parent_grid_size"]
+            
+            if "offset" in input_dict:
+                parent_dict["offset"] = input_dict["parent_offset"]
+            parent_feat = self.extract_features(parent_dict, is_parent=True)  # (batch_size, C)
+        
+        if self.use_parent_cloud and parent_feat is not None:
+            if self.fusion_type == "concat":
+                global_feat = torch.cat([local_feat, parent_feat], dim=-1)  # (batch_size, 2C)
+            elif self.fusion_type == "cross_attention":
+                local_feat_unsqueeze = local_feat.unsqueeze(1)
+                parent_feat_unsqueeze = parent_feat.unsqueeze(1)
+                print(f"\nBefore cross attention:")
+                print(f"   local_feat_unsqueeze: {local_feat_unsqueeze.shape}")
+                print(f"   parent_feat_unsqueeze: {parent_feat_unsqueeze.shape}")
+                fused_feat, attn_weights = self.cross_attention(
+                    query=local_feat_unsqueeze,
+                    key=parent_feat_unsqueeze,
+                    value=parent_feat_unsqueeze,
+                )
+                print(f"\nAfter cross attention:")
+                print(f"   fused_feat: shape={fused_feat.shape}, mean={fused_feat.mean().item():.6f}, std={fused_feat.std().item():.6f}")
+                print(f"   attn_weights: shape={attn_weights.shape}")
+                print(f"   attn_weights values: {attn_weights.squeeze().detach().cpu().tolist()}")                
+                global_feat = fused_feat.squeeze(1)  # (batch_size, C)
+            else:
+                raise ValueError(f"Unknown fusion_type: {self.fusion_type}")
+        else:
+            global_feat = local_feat
         
         if self.use_category_condition and "category_id" in input_dict:
             category_id = input_dict["category_id"]  # (batch_size,)
@@ -148,21 +262,42 @@ class ContactPositionRegressor(nn.Module):
             category_emb = self.category_embedding(category_id)  # (batch_size, category_emb_dim)
             global_feat = torch.cat([global_feat, category_emb], dim=-1)  # (batch_size, C + emb_dim)
         
-        position_pred = self.regression_head(global_feat)  # (batch_size, 3) 
-        return_dict = {}
-        if return_point:
-            return_dict["point"] = point
-        
-        if self.training or "gt_position" in input_dict.keys():
-            gt_position = input_dict["gt_position"]
+        position_pred_norm = self.regression_head(global_feat)  # (batch_size, 3)
+        if "norm_offset" in input_dict and "norm_scale" in input_dict:
+            norm_offset = input_dict["norm_offset"]  # (batch_size, 3)
+            norm_scale = input_dict["norm_scale"]    # (batch_size, 3) 
+
+            if norm_offset.shape != position_pred_norm.shape:
+                raise ValueError(
+                    f"norm_offset shape {norm_offset.shape} != position_pred_norm shape {position_pred_norm.shape}"
+                )
             
-            # total_loss = 0.0
-            # for criterion in self.criteria:
-            #     total_loss += criterion(position_pred, gt_position)
+            if norm_scale.shape != position_pred_norm.shape:
+                raise ValueError(
+                    f"norm_scale shape {norm_scale.shape} != position_pred_norm shape {position_pred_norm.shape}"
+                )
+            
+            # world_coord = norm_coord * range + min
+            position_pred = position_pred_norm * norm_scale + norm_offset
+        else:
+            print(f"\n⚠️  Missing norm_offset or norm_scale, using normalized prediction")
+            position_pred = position_pred_norm
+        
+        return_dict = {}
+        
+        if return_point:
+            return_dict["local_feat"] = local_feat
+            return_dict["parent_feat"] = parent_feat
+            return_dict["global_feat"] = global_feat
+
+        if self.training or "gt_position" in input_dict:
+            gt_position_norm = input_dict["gt_position"]
+            gt_position = gt_position_norm * norm_scale + norm_offset
+            
             loss_smooth_l1 = self.criterion_smooth_l1(position_pred, gt_position)
             loss_mse = self.criterion_mse(position_pred, gt_position)
-            total_loss = loss_smooth_l1 * 1.0 + loss_mse * 0.5  
-                     
+            total_loss = loss_smooth_l1 * 1.0 + loss_mse * 0.5
+            
             return_dict["loss"] = total_loss
             
             if not self.training:

@@ -4,7 +4,8 @@ from pathlib import Path
 from torch.utils.data import DataLoader
 from functools import partial
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
 
 from pointcept.datasets.builder import build_dataset
 from pointcept.datasets.utils import point_collate_fn
@@ -23,17 +24,46 @@ def test_model_forward():
         print("   ⚠️  Warning: CUDA not available, but PTv3 requires GPU!")
         print("   ⚠️  This test will likely fail on CPU.")
     
-    cfg = Config.fromfile("/home/ypf/PointTransformerV3_Simple/configs/s3dis/semseg-pt-v3m1-gelsight.py")
+    config_path = project_root / "configs" / "s3dis" / "semseg-pt-v3m1-gelsight.py"
+    print(f"\n📄 Config file: {config_path}")
+    
+    if not config_path.exists():
+        print(f"   ❌ Config file not found!")
+        return
+    
+    cfg = Config.fromfile(str(config_path))
+    
+    # 🔥 新增：打印模型配置
+    print(f"\n📋 Model configuration:")
+    if hasattr(cfg, 'model'):
+        if 'use_parent_cloud' in cfg.model:
+            print(f"   use_parent_cloud: {cfg.model['use_parent_cloud']}")
+        if 'fusion_type' in cfg.model:
+            print(f"   fusion_type: {cfg.model['fusion_type']}")
+        if 'parent_backbone' in cfg.model:
+            if cfg.model['parent_backbone'] is None:
+                print(f"   parent_backbone: None (shared weights)")
+            else:
+                print(f"   parent_backbone: Independent")
     
     # Build dataset
-    train_dataset = build_dataset(cfg.data.train)
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=2,
-        shuffle=False,
-        num_workers=0,
-        collate_fn=partial(point_collate_fn, mix_prob=0.0),
-    )
+    print(f"\n🔧 Building dataset...")
+    try:
+        train_dataset = build_dataset(cfg.data.train)
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=2,
+            shuffle=False,
+            num_workers=0,
+            collate_fn=partial(point_collate_fn, mix_prob=0.0),
+        )
+        print(f"   ✅ Dataset built successfully")
+        print(f"   Total samples: {len(train_dataset)}")
+    except Exception as e:
+        print(f"   ❌ Dataset build failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return
     
     # Build model
     print(f"\n🔧 Building model...")
@@ -44,6 +74,12 @@ def test_model_forward():
         print(f"   ✅ Model built successfully")
         print(f"   Type: {type(model).__name__}")
         print(f"   Device: {next(model.parameters()).device}")
+        
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"   Total params: {total_params:,}")
+        print(f"   Trainable params: {trainable_params:,}")
+        
     except Exception as e:
         print(f"   ❌ Model build failed: {e}")
         import traceback
@@ -52,19 +88,74 @@ def test_model_forward():
     
     # Load batch
     print(f"\n🔧 Loading batch...")
-    batch = next(iter(train_loader))
+    try:
+        batch = next(iter(train_loader))
+    except Exception as e:
+        print(f"   ❌ Batch load failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return
     
     print(f"   ✅ Batch loaded")
     print(f"   Keys: {list(batch.keys())}")
-    print(f"   - coord: {batch['coord'].shape}")
-    print(f"   - offset: {batch['offset']}")
-    print(f"   - gt_position: {batch['gt_position'].shape}")
     
+    # 🔥 修复：添加父点云字段检查
+    required_keys = ['coord', 'offset', 'gt_position']
+    optional_keys = [
+        'feat', 'color', 'grid_coord', 'category_id', 
+        'norm_offset', 'norm_scale',
+        'parent_coord', 'parent_color', 'batch'  # 🔥 新增
+    ]
+    
+    print(f"\n   📋 Required fields:")
+    missing_required = []
+    for key in required_keys:
+        if key in batch:
+            if isinstance(batch[key], torch.Tensor):
+                print(f"      ✅ {key}: shape={batch[key].shape}, dtype={batch[key].dtype}")
+            else:
+                print(f"      ✅ {key}: {batch[key]}")
+        else:
+            print(f"      ❌ {key}: MISSING!")
+            missing_required.append(key)
+    
+    if missing_required:
+        print(f"\n   ❌ Missing required fields: {missing_required}")
+        print(f"   ❌ Cannot continue test!")
+        return
+    
+    print(f"\n   📋 Optional fields:")
+    for key in optional_keys:
+        if key in batch:
+            if isinstance(batch[key], torch.Tensor):
+                print(f"      ✅ {key}: shape={batch[key].shape}, dtype={batch[key].dtype}")
+            else:
+                print(f"      ✅ {key}: {batch[key]}")
+        else:
+            print(f"      ⚠️  {key}: not present")
+    
+    # 🔥 新增：父点云状态检查
+    print(f"\n   📊 Parent cloud status:")
+    if 'parent_coord' in batch:
+        print(f"      ✅ Parent cloud is present")
+        print(f"         - parent_coord: {batch['parent_coord'].shape}")
+        if 'parent_color' in batch:
+            print(f"         - parent_color: {batch['parent_color'].shape}")
+        if 'batch' in batch:
+            print(f"         - batch indices: {batch['batch'].shape}")
+            print(f"         - unique batch IDs: {torch.unique(batch['batch']).tolist()}")
+    else:
+        print(f"      ⚠️  Parent cloud is NOT present")
+        print(f"         This is expected if use_parent_cloud=False in dataset")
+        if hasattr(cfg, 'model') and cfg.model.get('use_parent_cloud', False):
+            print(f"         ⚠️  WARNING: Model expects parent cloud but dataset doesn't provide it!")
+    
+    # Move to device
     for key in batch.keys():
         if isinstance(batch[key], torch.Tensor):
             batch[key] = batch[key].to(device)
     
-    print(f"   - coord device: {batch['coord'].device}")
+    print(f"\n   ✅ Batch moved to device: {device}")
     
     # Test forward
     print(f"\n🔧 Testing forward pass...")
@@ -77,19 +168,61 @@ def test_model_forward():
         
         if isinstance(output, dict):
             print(f"   Output keys: {list(output.keys())}")
+            
             for key, value in output.items():
                 if isinstance(value, torch.Tensor):
                     print(f"      - {key}: shape={value.shape}, dtype={value.dtype}, device={value.device}")
+            
+            # 预测结果分析
+            if "pred_position" in output and "gt_position" in batch:
+                pred = output["pred_position"].cpu()
+                gt_norm = batch["gt_position"].cpu()
+                
+                # 🔥 手动反归一化 GT（用于显示）
+                if "norm_offset" in batch and "norm_scale" in batch:
+                    norm_offset = batch["norm_offset"].cpu()
+                    norm_scale = batch["norm_scale"].cpu()
+                    gt = gt_norm * norm_scale + norm_offset  # 反归一化
+                else:
+                    gt = gt_norm
+                
+                # 显示
+                for i in range(len(pred)):
+                    pred_i = pred[i]
+                    gt_i = gt[i]
+                    error = torch.norm(pred_i - gt_i).item()
+                    print(f"   Sample {i}: Pred={pred_i.tolist()}, GT={gt_i.tolist()}, Error={error:.4f}")
+            
+            # 检查 loss
+            if "loss" in output:
+                loss = output["loss"]
+                print(f"\n      📉 Loss: {loss.item():.6f}")
+                
+                if torch.isnan(loss):
+                    print(f"         ❌ Loss is NaN!")
+                elif torch.isinf(loss):
+                    print(f"         ❌ Loss is Inf!")
+                else:
+                    print(f"         ✅ Loss is valid")
+            
+            # 🔥 新增：检查融合特征（如果 return_point=True）
+            if "local_feat" in output:
+                print(f"\n      🔍 Feature analysis:")
+                print(f"         - local_feat: {output['local_feat'].shape}")
+                if "parent_feat" in output and output["parent_feat"] is not None:
+                    print(f"         - parent_feat: {output['parent_feat'].shape}")
+                    print(f"         ✅ Cross-cloud fusion is working")
+                else:
+                    print(f"         ⚠️  No parent features (single cloud mode)")
+                if "global_feat" in output:
+                    print(f"         - global_feat: {output['global_feat'].shape}")
                     
-                    if key == "position_pred" and "gt_position" in batch:
-                        print(f"\n   📊 Predictions vs Ground Truth:")
-                        pred = value.cpu()
-                        gt = batch["gt_position"].cpu()
-                        for i in range(len(pred)):
-                            print(f"      Sample {i}: pred={pred[i].tolist()}, gt={gt[i].tolist()}")
-                            
         elif isinstance(output, torch.Tensor):
             print(f"   Output shape: {output.shape}")
+        
+        print(f"\n" + "=" * 80)
+        print(f"✅ Test completed successfully!")
+        print(f"=" * 80)
         
     except Exception as e:
         print(f"\n   ❌ Forward pass failed!")
@@ -98,6 +231,10 @@ def test_model_forward():
         print(f"\n   Full traceback:")
         import traceback
         traceback.print_exc()
+        
+        print(f"\n" + "=" * 80)
+        print(f"❌ Test failed!")
+        print(f"=" * 80)
 
 
 if __name__ == "__main__":
