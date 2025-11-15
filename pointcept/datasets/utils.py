@@ -72,68 +72,35 @@ def collate_fn(batch):
 
 def point_collate_fn(batch, mix_prob=0):
     assert isinstance(batch[0], Mapping), "Only dict input is supported"
+    assert "local" in batch[0] and "parent" in batch[0], \
+        "Batch must contain 'local' and 'parent' keys"
     
-    stack_fields = {"gt_position", "category_id", "norm_offset", "norm_scale"}
-    parent_fields = {
-        "parent_coord", 
-        "parent_color", 
-        "parent_grid_coord", 
-        "parent_grid_size"
+
+    local_batch = [sample["local"] for sample in batch]
+    parent_batch = [sample["parent"] for sample in batch]
+    
+    result = {
+        "local": collate_fn(local_batch),
+        "parent": collate_fn(parent_batch),
     }
     
-    special_data = {field: [] for field in stack_fields}
-    parent_data = {}
-    clean_batch = []
-
-    for i, data_dict in enumerate(batch):    
-        clean_dict = {}
-        
-        for key, value in data_dict.items():
-            if key in stack_fields:
-                if not isinstance(value, torch.Tensor):
-                    value = torch.as_tensor(value)
-                special_data[key].append(value)
-                
-            elif key in parent_fields:
-                if not isinstance(value, torch.Tensor):
-                    value = torch.as_tensor(value)
-                
-                if key not in parent_data:
-                    parent_data[key] = []
-                parent_data[key].append(value)
-                
-                if key == "parent_coord":
-                    if "parent_batch" not in parent_data:
-                        parent_data["parent_batch"] = []
-                    n_points = value.shape[0]
-                    parent_data["parent_batch"].append(
-                        torch.full((n_points,), i, dtype=torch.int32)
-                    )
-            else:
-                clean_dict[key] = value
-        
-        clean_batch.append(clean_dict)
+    top_level_keys = set(batch[0].keys()) - {"local", "parent"}
     
-    batch = collate_fn(clean_batch)
-    
-    for field, values in special_data.items():
-        if values:
-            batch[field] = torch.stack(values)
-    
-    for field, values in parent_data.items():
-        if values:
-            if field == "parent_grid_size":
-                batch[field] = values[0] if isinstance(values[0], (int, float)) else values[0].item()
-            else:
-                batch[field] = torch.cat(values, dim=0)
-    
-    if "parent_batch" in parent_data and parent_data["parent_batch"]:
-        parent_batch = batch["parent_batch"]  # (M_total,)
+    for key in top_level_keys:
+        values = [sample[key] for sample in batch]
         
-        counts = torch.bincount(parent_batch.long())  # (batch_size,)
-        parent_offset = torch.cumsum(counts, dim=0)  # (batch_size,)
+        # 转换为 Tensor
+        tensor_values = []
+        for v in values:
+            if not isinstance(v, torch.Tensor):
+                v = torch.as_tensor(v)
+            tensor_values.append(v)
         
-        batch["parent_offset"] = parent_offset
+        # 尝试 stack，失败则保留 list
+        try:
+            result[key] = torch.stack(tensor_values)
+        except:
+            result[key] = tensor_values
     
     if random.random() < mix_prob:
         if "instance" in batch.keys():
