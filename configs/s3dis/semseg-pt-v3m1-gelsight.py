@@ -112,7 +112,7 @@ data = dict(
             dict(type="ToTensor"),
             dict(
                 type="Collect",
-                keys=("coord", "grid_coord", "gt_position", "category_id", "name"),
+                keys=("coord", "grid_coord", "gt_position", "category_id", "name", "parent_id"),
                 feat_keys=("color",),
                 # offset_keys_dict={},
             ),
@@ -127,6 +127,12 @@ data = dict(
             ),
             dict(type="NormalizeColor"),
             dict(type="ToTensor"),
+            dict(
+                type="Collect",
+                keys=("coord", "grid_coord", "name"),
+                feat_keys=("color",),
+                # offset_keys_dict={},
+            ),
         ],        
         test_mode=False,
     ),
@@ -150,7 +156,7 @@ data = dict(
             dict(type="ToTensor"),
             dict(
                 type="Collect",
-                keys=("coord", "grid_coord", "gt_position", "category_id", "name"),
+                keys=("coord", "grid_coord", "gt_position", "category_id", "name", "parent_id"),
                 feat_keys=("color",),
                 # offset_keys_dict={},
             ),
@@ -165,6 +171,12 @@ data = dict(
             ),
             dict(type="NormalizeColor"),
             dict(type="ToTensor"),
+            dict(
+                type="Collect",
+                keys=("coord", "grid_coord", "name"),
+                feat_keys=("color",),
+                # offset_keys_dict={},
+            ),            
         ],        
         test_mode=False,
     ),
@@ -188,6 +200,12 @@ data = dict(
             ),
             dict(type="NormalizeColor"),
             dict(type="ToTensor"),
+            dict(
+                type="Collect",
+                keys=("coord", "grid_coord", "name"),
+                feat_keys=("color",),
+                # offset_keys_dict={},
+            ),
         ],           
         test_mode=True,
         test_cfg=dict(
@@ -204,7 +222,7 @@ data = dict(
                 dict(type="ToTensor"),
                 dict(
                     type="Collect",
-                    keys=("coord", "grid_coord", "name"),
+                    keys=("coord", "grid_coord", "name", "parent_id"),
                     feat_keys=("color",),
                     # offset_keys_dict={},
                 ),
