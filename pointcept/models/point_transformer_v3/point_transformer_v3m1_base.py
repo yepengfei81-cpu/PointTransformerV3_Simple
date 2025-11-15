@@ -162,7 +162,6 @@ class SerializedAttention(PointModule):
                         device=offset.device,
                     )
                 )
-                print(f"   Generated {len(cu_seqlens[-1])} seqlens")
             point[pad_key] = pad
             point[unpad_key] = unpad
             point[cu_seqlens_key] = nn.functional.pad(

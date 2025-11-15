@@ -58,7 +58,7 @@ model = dict(
     # ],
     freeze_backbone=False,
     pooling_type="attention",  
-    use_parent_cloud=True,
+    use_parent_cloud=False,
     parent_backbone=None, # shared backbone
     fusion_type="cross_attention",  # "concat" | "cross_attention"  
 )
@@ -68,7 +68,7 @@ eval_epoch = 250
 optimizer = dict(type="AdamW", lr=0.001, weight_decay=0.01)
 scheduler = dict(
     type="OneCycleLR",
-    max_lr=[0.001, 0.0001],
+    max_lr=[0.001, 0.001],
     pct_start=0.1,
     anneal_strategy="cos",
     div_factor=10.0,

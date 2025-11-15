@@ -236,18 +236,18 @@ class ContactPositionRegressor(nn.Module):
             elif self.fusion_type == "cross_attention":
                 local_feat_unsqueeze = local_feat.unsqueeze(1)
                 parent_feat_unsqueeze = parent_feat.unsqueeze(1)
-                print(f"\nBefore cross attention:")
-                print(f"   local_feat_unsqueeze: {local_feat_unsqueeze.shape}")
-                print(f"   parent_feat_unsqueeze: {parent_feat_unsqueeze.shape}")
+                # print(f"\nBefore cross attention:")
+                # print(f"   local_feat_unsqueeze: {local_feat_unsqueeze.shape}")
+                # print(f"   parent_feat_unsqueeze: {parent_feat_unsqueeze.shape}")
                 fused_feat, attn_weights = self.cross_attention(
                     query=local_feat_unsqueeze,
                     key=parent_feat_unsqueeze,
                     value=parent_feat_unsqueeze,
                 )
-                print(f"\nAfter cross attention:")
-                print(f"   fused_feat: shape={fused_feat.shape}, mean={fused_feat.mean().item():.6f}, std={fused_feat.std().item():.6f}")
-                print(f"   attn_weights: shape={attn_weights.shape}")
-                print(f"   attn_weights values: {attn_weights.squeeze().detach().cpu().tolist()}")                
+                # print(f"\nAfter cross attention:")
+                # print(f"   fused_feat: shape={fused_feat.shape}, mean={fused_feat.mean().item():.6f}, std={fused_feat.std().item():.6f}")
+                # print(f"   attn_weights: shape={attn_weights.shape}")
+                # print(f"   attn_weights values: {attn_weights.squeeze().detach().cpu().tolist()}")                
                 global_feat = fused_feat.squeeze(1)  # (batch_size, C)
             else:
                 raise ValueError(f"Unknown fusion_type: {self.fusion_type}")

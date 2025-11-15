@@ -505,18 +505,15 @@ class ContactPositionDataset(Dataset):
         test_cfg=None,
         loop=1,
         ignore_index=-1,
-        max_cache_size=5,  # 🔥 新增：缓存大小
+        max_cache_size=5,
     ):
         super(ContactPositionDataset, self).__init__()
         
-        # 🔥 新增：父点云相关
+        # 🔥 父点云相关
         if parent_pcd_root is None:
             parent_pcd_root = data_root
         self.parent_pcd_root = Path(parent_pcd_root)
-        self.parent_pcd_cache = {}  # 缓存父点云
-        self.cache_access_order = []  # LRU缓存顺序
-        self.max_cache_size = max_cache_size
-        
+        self.parent_pcd_cache = {}
         self.data_root = data_root
         self.split = split
         self.transform = Compose(transform) if transform else None
@@ -546,7 +543,68 @@ class ContactPositionDataset(Dataset):
             )
         )
         logger.info(f"Parent PCD root: {self.parent_pcd_root}")
-        logger.info(f"Parent cache size: {self.max_cache_size}")
+        logger.info("🔄 Pre-loading all parent point clouds to memory...")
+        self._preload_all_parent_clouds()
+        logger.info(f"✅ Pre-loaded {len(self.parent_pcd_cache)} parent clouds")
+    
+    def _preload_all_parent_clouds(self):
+        import open3d as o3d
+        
+        logger = get_root_logger()
+        
+        parent_keys = set()
+        for data_path in self.data_list:
+            full_path = Path(self.data_root) / data_path
+            try:
+                data_dict = torch.load(full_path, weights_only=False)
+                category = data_dict.get("category", "Unknown")
+                parent_id = data_dict.get("parent_id", "unknown")
+                parent_keys.add((category, parent_id))
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to load {data_path}: {e}")
+                continue
+        
+        logger.info(f"   Found {len(parent_keys)} unique parent point clouds")
+        
+        for category, parent_id in parent_keys:
+            cache_key = f"{category}_{parent_id}"
+            
+            parent_file = self.parent_pcd_root / category / f"bigpointcloud_{parent_id}.ply"
+            if not parent_file.exists():
+                parent_file = self.parent_pcd_root / category / f"data{int(parent_id)}.ply"
+            if not parent_file.exists():
+                parent_file = self.parent_pcd_root / category / f"bigpointcloud_{parent_id}.pcd"
+            
+            if not parent_file.exists():
+                logger.warning(f"⚠️  Parent cloud not found: {cache_key}")
+                logger.warning(f"     Tried: {self.parent_pcd_root / category / f'bigpointcloud_{parent_id}.ply'}")
+                continue
+            
+            try:
+                parent_pcd = o3d.io.read_point_cloud(str(parent_file))
+                parent_coord = np.asarray(parent_pcd.points, dtype=np.float32)
+                parent_color = np.asarray(parent_pcd.colors, dtype=np.float32)
+                
+                if len(parent_coord) == 0:
+                    logger.warning(f"⚠️  Empty parent cloud: {cache_key}")
+                    continue
+                
+                self.parent_pcd_cache[cache_key] = {
+                    "parent_coord": parent_coord,
+                    "parent_color": parent_color,
+                }
+                
+                logger.info(f"   ✅ {cache_key}: {len(parent_coord)} points from {parent_file.name}")
+                
+            except Exception as e:
+                logger.error(f"❌ Failed to load {cache_key}: {e}")
+                continue
+    
+    def load_parent_pointcloud(self, parent_id, category):
+        cache_key = f"{category}_{parent_id}"
+        
+        if cache_key in self.parent_pcd_cache:
+            return self.parent_pcd_cache[cache_key]
     
     def get_data_list(self):
         split_file = Path(self.data_root) / f"{self.split}.txt"
@@ -568,59 +626,6 @@ class ContactPositionDataset(Dataset):
             raise ValueError(f"Empty split file: {split_file}")
         
         return data_list
-    
-    def load_parent_pointcloud(self, parent_id, category):
-        cache_key = f"{category}_{parent_id}"
-        if cache_key in self.parent_pcd_cache:
-            # LRU: 移到队尾
-            self.cache_access_order.remove(cache_key)
-            self.cache_access_order.append(cache_key)
-            return self.parent_pcd_cache[cache_key]
-        
-        parent_file = self.parent_pcd_root / category / f"bigpointcloud_{parent_id}.ply"
-        
-        if not parent_file.exists():
-            # 尝试 data{int}.ply 格式
-            parent_file = self.parent_pcd_root / category / f"data{int(parent_id)}.ply"
-        
-        if not parent_file.exists():
-            raise FileNotFoundError(
-                f"Parent point cloud not found:\n"
-                f"  Tried: {self.parent_pcd_root / category / f'bigpointcloud_{parent_id}.ply'}\n"
-                f"  Tried: {self.parent_pcd_root / category / f'data{int(parent_id)}.ply'}\n"
-                f"  Category: {category}, Parent ID: {parent_id}"
-            )
-        
-        try:
-            import open3d as o3d
-            parent_pcd = o3d.io.read_point_cloud(str(parent_file))
-            parent_coord = np.asarray(parent_pcd.points, dtype=np.float32)
-            parent_color = np.asarray(parent_pcd.colors, dtype=np.float32)
-        
-        except ImportError:
-            raise ImportError(
-                "Open3D is required for loading parent point clouds.\n"
-                "Install: pip install open3d"
-            )
-        
-        logger = get_root_logger()
-        logger.info(f"Loaded parent cloud {cache_key}: {parent_coord.shape[0]} points from {parent_file.name}")
-        
-        # 🔥 准备数据
-        parent_data = {
-            "parent_coord": parent_coord, 
-            "parent_color": parent_color,
-        }
-        
-        if len(self.parent_pcd_cache) >= self.max_cache_size:
-            oldest_key = self.cache_access_order.pop(0)
-            del self.parent_pcd_cache[oldest_key]
-            logger.info(f"Cache full, removed: {oldest_key}")
-        
-        self.parent_pcd_cache[cache_key] = parent_data
-        self.cache_access_order.append(cache_key)
-        
-        return parent_data
     
     def get_data_name(self, idx):
         data_path = self.data_list[idx % len(self.data_list)]

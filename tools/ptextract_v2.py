@@ -231,15 +231,19 @@ class PTv3DatasetGenerator:
             
             actual_center = local_points.mean(axis=0).astype(np.float32)
             
-            # 🔥 使用全局参数归一化
             gt_position_normalized = (actual_center - self.global_min) / self.global_range
             local_coord_normalized = (local_points - self.global_min) / self.global_range
-            
+
             # 确保类型正确
             gt_position_normalized = gt_position_normalized.astype(np.float32)
             local_coord_normalized = local_coord_normalized.astype(np.float32)
-            
-            return local_coord_normalized, local_colors.astype(np.float32), gt_position_normalized, radius, method, True
+
+            local_coord_original = local_points.astype(np.float32)
+            gt_position_original = actual_center.astype(np.float32)
+
+            # 返回时增加原始坐标
+            return (local_coord_normalized, local_colors.astype(np.float32), gt_position_normalized,
+                    local_coord_original, gt_position_original, radius, method, True)
         
         return None, None, None, None, None, False
     
@@ -312,9 +316,9 @@ class PTv3DatasetGenerator:
         
         for i, (method, radius) in enumerate(pbar):
             # 🔥 使用指定的方法和半径提取（步骤2会用全局参数归一化）
-            local_coord, local_color, gt_position, actual_radius, used_method, success = self._extract_random_patch(
-                global_coord, global_color, pcd_info, radius, method
-            )
+            (local_coord, local_color, gt_position,
+            local_coord_original, gt_position_original,
+            actual_radius, used_method, success) = self._extract_random_patch(global_coord, global_color, pcd_info, radius, method)
             
             if not success:
                 failed_count += 1
@@ -341,6 +345,9 @@ class PTv3DatasetGenerator:
                 # 🔥 保存全局归一化参数（所有样本相同）
                 "norm_offset": self.global_min,   # 全局 min
                 "norm_scale": self.global_range,  # 全局 scale
+
+                "local_coord_original": local_coord_original,
+                "gt_position_original": gt_position_original,      
                 
                 # 保留单个点云参数（用于调试和验证）
                 "pcd_min": pcd_info['min'],
@@ -627,7 +634,94 @@ def verify_single_sample(pth_path):
         print(f"   ✅ 质心位置合理")
     else:
         print(f"   ⚠️  质心距离 GT 较远")
+
+    # 🔥 新增：反归一化验证（与原始坐标对比）
+    if ('norm_offset' in data_dict and 'norm_scale' in data_dict and
+        'local_coord_original' in data_dict and 'gt_position_original' in data_dict):
+        
+        print(f"\n{'='*70}")
+        print(f"🔄 反归一化验证")
+        print(f"{'='*70}")
+        
+        norm_offset = data_dict['norm_offset']
+        norm_scale = data_dict['norm_scale']
+        
+        # 反归一化局部坐标
+        local_coord_normalized = data_dict['local_coord']
+        local_coord_denormalized = local_coord_normalized * norm_scale + norm_offset
+        
+        # 反归一化 GT 位置
+        gt_position_normalized = data_dict['gt_position']
+        gt_position_denormalized = gt_position_normalized * norm_scale + norm_offset
+        
+        # 读取原始坐标
+        local_coord_original = data_dict['local_coord_original']
+        gt_position_original = data_dict['gt_position_original']
+        
+        print(f"\n📊 坐标对比:")
+        print(f"   局部点云:")
+        print(f"      原始坐标范围:     [{local_coord_original.min():.6f}, {local_coord_original.max():.6f}]")
+        print(f"      反归一化坐标范围: [{local_coord_denormalized.min():.6f}, {local_coord_denormalized.max():.6f}]")
+        
+        # 计算坐标差异
+        coord_diff = np.abs(local_coord_denormalized - local_coord_original)
+        max_diff = coord_diff.max()
+        mean_diff = coord_diff.mean()
+        
+        print(f"\n   坐标误差:")
+        print(f"      最大误差: {max_diff:.9f} 米 = {max_diff*1000:.6f} 毫米")
+        print(f"      平均误差: {mean_diff:.9f} 米 = {mean_diff*1000:.6f} 毫米")
+        
+        if max_diff < 1e-6:
+            print(f"      ✅ 反归一化完全正确")
+        elif max_diff < 1e-5:
+            print(f"      ✅ 反归一化基本正确（浮点误差）")
+        else:
+            print(f"      ❌ 反归一化存在问题")
+        
+        print(f"\n   GT 位置:")
+        print(f"      原始 GT:      [{gt_position_original[0]:.6f}, {gt_position_original[1]:.6f}, {gt_position_original[2]:.6f}]")
+        print(f"      反归一化 GT:  [{gt_position_denormalized[0]:.6f}, {gt_position_denormalized[1]:.6f}, {gt_position_denormalized[2]:.6f}]")
+        
+        # 计算 GT 位置差异
+        gt_diff = np.linalg.norm(gt_position_denormalized - gt_position_original)
+        
+        print(f"\n   GT 位置误差:")
+        print(f"      距离: {gt_diff:.9f} 米 = {gt_diff*1000:.6f} 毫米")
+        
+        if gt_diff < 1e-6:
+            print(f"      ✅ GT 位置反归一化完全正确")
+        elif gt_diff < 1e-5:
+            print(f"      ✅ GT 位置反归一化基本正确（浮点误差）")
+        else:
+            print(f"      ❌ GT 位置反归一化存在问题")
+        
+        # 🔥 验证质心
+        local_center_original = local_coord_original.mean(axis=0)
+        local_center_denormalized = local_coord_denormalized.mean(axis=0)
+        
+        center_diff = np.linalg.norm(local_center_original - local_center_denormalized)
+        gt_vs_center_original = np.linalg.norm(gt_position_original - local_center_original)
+        gt_vs_center_denorm = np.linalg.norm(gt_position_denormalized - local_center_denormalized)
+        
+        print(f"\n   质心验证:")
+        print(f"      原始质心:         [{local_center_original[0]:.6f}, {local_center_original[1]:.6f}, {local_center_original[2]:.6f}]")
+        print(f"      反归一化质心:     [{local_center_denormalized[0]:.6f}, {local_center_denormalized[1]:.6f}, {local_center_denormalized[2]:.6f}]")
+        print(f"      质心误差:         {center_diff:.9f} 米 = {center_diff*1000:.6f} 毫米")
+        print(f"      原始 GT vs 原始质心:    {gt_vs_center_original:.9f} 米 = {gt_vs_center_original*1000:.6f} 毫米")
+        print(f"      反归一化 GT vs 反归一化质心: {gt_vs_center_denorm:.9f} 米 = {gt_vs_center_denorm*1000:.6f} 毫米")
+        
+        if abs(gt_vs_center_original - gt_vs_center_denorm) < 1e-6:
+            print(f"      ✅ 质心关系保持一致")
+        else:
+            print(f"      ⚠️  质心关系发生变化")
+        
+        print(f"{'='*70}\n")
     
+    elif 'norm_offset' in data_dict and 'norm_scale' in data_dict:
+        print(f"\n⚠️  数据中缺少原始坐标，无法验证反归一化")
+        print(f"   提示: 使用新版本数据生成脚本重新生成数据")
+            
     print(f"\n{'='*70}")
     print(f"✅ 验证完成")
     print(f"{'='*70}\n")
