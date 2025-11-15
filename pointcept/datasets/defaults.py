@@ -492,6 +492,7 @@ class ConcatDataset(Dataset):
     def __len__(self):
         return len(self.data_list) * self.loop
 
+
 @DATASETS.register_module()
 class ContactPositionDataset(Dataset):
     def __init__(
@@ -505,11 +506,9 @@ class ContactPositionDataset(Dataset):
         test_cfg=None,
         loop=1,
         ignore_index=-1,
-        max_cache_size=5,
     ):
         super(ContactPositionDataset, self).__init__()
         
-        # 🔥 父点云相关
         if parent_pcd_root is None:
             parent_pcd_root = data_root
         self.parent_pcd_root = Path(parent_pcd_root)
@@ -551,33 +550,33 @@ class ContactPositionDataset(Dataset):
         import open3d as o3d
         
         logger = get_root_logger()
-        
         parent_keys = set()
         for data_path in self.data_list:
             full_path = Path(self.data_root) / data_path
             try:
                 data_dict = torch.load(full_path, weights_only=False)
-                category = data_dict.get("category", "Unknown")
-                parent_id = data_dict.get("parent_id", "unknown")
-                parent_keys.add((category, parent_id))
+                category = data_dict.get("category")
+                parent_id = data_dict.get("parent_id")
+                bigpcd_name = data_dict.get("bigpcd_name")
+                
+                if category is None or parent_id is None or bigpcd_name is None:
+                    logger.warning(f"⚠️  Missing required fields in {data_path}")
+                    continue
+                
+                parent_keys.add((category, parent_id, bigpcd_name))
             except Exception as e:
                 logger.warning(f"⚠️  Failed to load {data_path}: {e}")
                 continue
         
         logger.info(f"   Found {len(parent_keys)} unique parent point clouds")
         
-        for category, parent_id in parent_keys:
+        for category, parent_id, bigpcd_name in parent_keys:
             cache_key = f"{category}_{parent_id}"
             
-            parent_file = self.parent_pcd_root / category / f"bigpointcloud_{parent_id}.ply"
-            if not parent_file.exists():
-                parent_file = self.parent_pcd_root / category / f"data{int(parent_id)}.ply"
-            if not parent_file.exists():
-                parent_file = self.parent_pcd_root / category / f"bigpointcloud_{parent_id}.pcd"
+            parent_file = self.parent_pcd_root / category / bigpcd_name
             
             if not parent_file.exists():
-                logger.warning(f"⚠️  Parent cloud not found: {cache_key}")
-                logger.warning(f"     Tried: {self.parent_pcd_root / category / f'bigpointcloud_{parent_id}.ply'}")
+                logger.error(f"❌ Parent cloud not found: {parent_file}")
                 continue
             
             try:
@@ -590,11 +589,12 @@ class ContactPositionDataset(Dataset):
                     continue
                 
                 self.parent_pcd_cache[cache_key] = {
-                    "parent_coord": parent_coord,
-                    "parent_color": parent_color,
+                    "coord": parent_coord,
+                    "color": parent_color,
+                    "name": bigpcd_name,
                 }
                 
-                logger.info(f"   ✅ {cache_key}: {len(parent_coord)} points from {parent_file.name}")
+                logger.info(f"   ✅ {cache_key}: {len(parent_coord)} points from {bigpcd_name}")
                 
             except Exception as e:
                 logger.error(f"❌ Failed to load {cache_key}: {e}")
@@ -605,6 +605,8 @@ class ContactPositionDataset(Dataset):
         
         if cache_key in self.parent_pcd_cache:
             return self.parent_pcd_cache[cache_key]
+        
+        raise KeyError(f"Parent point cloud not found in cache: {cache_key}")
     
     def get_data_list(self):
         split_file = Path(self.data_root) / f"{self.split}.txt"
@@ -641,7 +643,7 @@ class ContactPositionDataset(Dataset):
         data_dict = torch.load(data_path, weights_only=False)
         
         required_keys = ["local_coord", "local_color", "gt_position",
-                        "norm_offset", "norm_scale", "parent_id", "category"]
+                        "norm_offset", "norm_scale", "parent_id", "category", "bigpcd_name"]
         
         for key in required_keys:
             if key not in data_dict:
@@ -661,64 +663,46 @@ class ContactPositionDataset(Dataset):
         category = data_dict["category"]
         
         parent_data = self.load_parent_pointcloud(parent_id, category)
-        parent_coord_raw = parent_data["parent_coord"]  # 原始 mm 坐标
-        parent_color = parent_data["parent_color"]
+        parent_coord_raw = parent_data["coord"]
+        parent_color = parent_data["color"]
+        parent_name = parent_data["name"]
         
-        norm_offset = data_dict["norm_offset"].astype(np.float32)  # (3,)
-        norm_scale = data_dict["norm_scale"].astype(np.float32)    # (3,)              # 全局 scale
+        norm_offset = data_dict["norm_offset"].astype(np.float32)
+        norm_scale = data_dict["norm_scale"].astype(np.float32)
         
         parent_coord_norm = (parent_coord_raw - norm_offset) / norm_scale
         
-        data_dict["parent_coord"] = parent_coord_norm.astype(np.float32)
-        data_dict["parent_color"] = parent_color.astype(np.float32)
-        data_dict["norm_offset"] = norm_offset
-        data_dict["norm_scale"] = np.float32(norm_scale)
-
+        parent_dict = {
+            "coord": parent_coord_norm.astype(np.float32),
+            "color": parent_color.astype(np.float32),
+            "name": parent_name,
+        }
+        
         data_dict["name"] = self.get_data_name(idx)
         data_dict["split"] = self.get_split_name(idx)
         
-        return data_dict
+        return data_dict, parent_dict, norm_offset, norm_scale
     
     def prepare_train_data(self, idx):
-        data_dict = self.get_data(idx)
+        data_dict, parent_dict, norm_offset, norm_scale = self.get_data(idx)
         
-        parent_dict = {
-            "coord": data_dict.pop("parent_coord"),  # (N_parent, 3)
-            "color": data_dict.pop("parent_color"),  # (N_parent, 3)
-        }
-        
-        norm_offset = data_dict.pop("norm_offset")
-        norm_scale = data_dict.pop("norm_scale")
-
         if self.transform is not None:
             data_dict = self.transform(data_dict)
         
         if self.parent_transform is not None:
             parent_dict = self.parent_transform(parent_dict)
-
-        data_dict["parent_coord"] = parent_dict["coord"]
-        data_dict["parent_color"] = parent_dict.get("color", parent_dict.get("feat"))
         
-        if "grid_coord" in parent_dict:
-            data_dict["parent_grid_coord"] = parent_dict["grid_coord"]
-
-        if "grid_size" in parent_dict:
-            data_dict["parent_grid_size"] = parent_dict["grid_size"]        
-        
-        data_dict["norm_offset"] = norm_offset
-        data_dict["norm_scale"] = norm_scale
-        
-        return data_dict
-    
-    def prepare_test_data(self, idx):
-        data_dict = self.get_data(idx)
-        parent_dict = {
-            "coord": data_dict.pop("parent_coord"),
-            "color": data_dict.pop("parent_color"),
+        result = {
+            "local": data_dict,
+            "parent": parent_dict,
+            "norm_offset": norm_offset,
+            "norm_scale": norm_scale,
         }
         
-        norm_offset = data_dict.pop("norm_offset")
-        norm_scale = data_dict.pop("norm_scale")
+        return result
+    
+    def prepare_test_data(self, idx):
+        data_dict, parent_dict, norm_offset, norm_scale = self.get_data(idx)
         
         if self.transform is not None:
             data_dict = self.transform(data_dict)
@@ -736,34 +720,15 @@ class ContactPositionDataset(Dataset):
         if "category_id" in data_dict:
             result_dict["category_id"] = data_dict.pop("category_id")
         
-        parent_coord = parent_dict["coord"]
-        parent_color = parent_dict.get("color", parent_dict.get("feat"))
-        
-        parent_grid_coord = None
-        if "grid_coord" in parent_dict:
-            parent_grid_coord = parent_dict["grid_coord"]
-        
-        parent_grid_size = None
-        if "grid_size" in parent_dict:
-            parent_grid_size = parent_dict["grid_size"]
-        
         if len(self.aug_transform) == 0:
             data_dict["index"] = np.arange(data_dict["coord"].shape[0])
             data_dict = self.post_transform(data_dict)
             
-            data_dict["parent_coord"] = parent_coord
-            data_dict["parent_color"] = parent_color
-            
-            if parent_grid_coord is not None:
-                data_dict["parent_grid_coord"] = parent_grid_coord
-            
-            if parent_grid_size is not None:
-                data_dict["parent_grid_size"] = parent_grid_size
-            
-            data_dict["norm_offset"] = torch.from_numpy(norm_offset) if isinstance(norm_offset, np.ndarray) else norm_offset
-            data_dict["norm_scale"] = torch.tensor(norm_scale) if not isinstance(norm_scale, torch.Tensor) else norm_scale
-            
-            result_dict["fragment_list"] = [data_dict]
+            fragment = {
+                "local": data_dict,
+                "parent": parent_dict,
+            }
+            result_dict["fragment_list"] = [fragment]
         else:
             fragment_list = []
             for aug in self.aug_transform:
@@ -771,19 +736,11 @@ class ContactPositionDataset(Dataset):
                 aug_data["index"] = np.arange(aug_data["coord"].shape[0])
                 aug_data = self.post_transform(aug_data)
                 
-                aug_data["parent_coord"] = parent_coord
-                aug_data["parent_color"] = parent_color
-                
-                if parent_grid_coord is not None:
-                    aug_data["parent_grid_coord"] = parent_grid_coord
-                
-                if parent_grid_size is not None:
-                    aug_data["parent_grid_size"] = parent_grid_size
-                
-                aug_data["norm_offset"] = torch.from_numpy(norm_offset) if isinstance(norm_offset, np.ndarray) else norm_offset
-                aug_data["norm_scale"] = torch.tensor(norm_scale) if not isinstance(norm_scale, torch.Tensor) else norm_scale
-                
-                fragment_list.append(aug_data)
+                fragment = {
+                    "local": aug_data,
+                    "parent": parent_dict,
+                }
+                fragment_list.append(fragment)
             result_dict["fragment_list"] = fragment_list
         
         return result_dict
