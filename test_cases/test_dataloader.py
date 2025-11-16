@@ -22,190 +22,248 @@ def print_separator(title="", width=80):
 
 
 def analyze_batch(batch, batch_idx):
-    """详细分析一个 batch 的内容"""
+    """详细分析一个 batch 的内容（嵌套结构）"""
     print(f"\n{'─' * 80}")
     print(f"📦 Batch {batch_idx} Analysis")
     print(f"{'─' * 80}")
     
     print(f"\n1️⃣  基本信息:")
     print(f"   - Type: {type(batch)}")
-    print(f"   - Keys: {list(batch.keys())}")
+    print(f"   - Top-level Keys: {list(batch.keys())}")
     
-    # 🔥 分析所有张量
-    print(f"\n2️⃣  张量形状:")
-    tensor_keys = [
-        'coord', 'grid_coord', 'feat', 'color', 'offset', 'grid_size',
-        'gt_position', 'category_id', 'norm_offset', 'norm_scale',
-        'parent_coord', 'parent_color', 'parent_grid_coord', 
-        'parent_grid_size', 'parent_batch', 'parent_offset',  # 🔥 新增父点云字段
-        'batch', 'name'
-    ]
-    
-    for key in tensor_keys:
-        if key in batch:
-            value = batch[key]
-            if isinstance(value, torch.Tensor):
-                print(f"   ✅ {key:20s}: shape={str(value.shape):20s} dtype={value.dtype}")
-            elif isinstance(value, list):
-                print(f"   ✅ {key:20s}: list of {len(value)} items")
-            elif isinstance(value, (int, float)):
-                print(f"   ✅ {key:20s}: {type(value).__name__}={value}")
-            else:
-                print(f"   ⚠️  {key:20s}: {type(value)}")
-    
-    # 🔥 分析局部点云的 offset
-    if "offset" in batch:
-        offset = batch["offset"]
-        print(f"\n3️⃣  局部点云 Offset 分析:")
-        print(f"   - Offset tensor: {offset.tolist()}")
-        print(f"   - Batch size: {len(offset) - 1}")
+    # 分析局部点云（local）
+    if "local" in batch:
+        print(f"\n2️⃣  局部点云 (local):")
+        local = batch["local"]
+        print(f"   - Keys: {list(local.keys())}")
         
-        print(f"\n   各样本的局部点云点数:")
-        for i in range(len(offset) - 1):
-            n_points = offset[i + 1] - offset[i]
-            print(f"      Sample {i}: {n_points:6d} points (range: [{offset[i]:6d}, {offset[i+1]:6d}))")
+        for key in ["coord", "grid_coord", "feat", "offset", "gt_position", "name"]:
+            if key in local:
+                value = local[key]
+                if isinstance(value, torch.Tensor):
+                    print(f"   ✅ {key:15s}: shape={str(value.shape):20s} dtype={value.dtype}")
+                elif isinstance(value, list):
+                    print(f"   ✅ {key:15s}: list of {len(value)} items")
+                else:
+                    print(f"   ✅ {key:15s}: {type(value).__name__}")
         
-        total_local_points = offset[-1].item()
-        print(f"\n   ✅ 总局部点数: {total_local_points}")
-        
-        # 🔥 验证 offset 的正确性
-        if "coord" in batch:
-            actual_points = batch["coord"].shape[0]
-            if actual_points == total_local_points:
-                print(f"   ✅ Offset 验证通过: coord.shape[0] ({actual_points}) == offset[-1] ({total_local_points})")
-            else:
-                print(f"   ❌ Offset 验证失败: coord.shape[0] ({actual_points}) != offset[-1] ({total_local_points})")
-    
-    # 🔥 分析父点云的 parent_offset
-    if "parent_offset" in batch:
-        parent_offset = batch["parent_offset"]
-        print(f"\n4️⃣  父点云 Parent Offset 分析:")
-        print(f"   - Parent Offset tensor: {parent_offset.tolist()}")
-        print(f"   - Batch size: {len(parent_offset) - 1}")
-        
-        print(f"\n   各样本的父点云点数:")
-        for i in range(len(parent_offset) - 1):
-            n_points = parent_offset[i + 1] - parent_offset[i]
-            print(f"      Sample {i}: {n_points:6d} points (range: [{parent_offset[i]:6d}, {parent_offset[i+1]:6d}))")
-        
-        total_parent_points = parent_offset[-1].item()
-        print(f"\n   ✅ 总父点云点数: {total_parent_points}")
-        
-        # 🔥 验证 parent_offset 的正确性
-        if "parent_coord" in batch:
-            actual_points = batch["parent_coord"].shape[0]
-            if actual_points == total_parent_points:
-                print(f"   ✅ Parent Offset 验证通过: parent_coord.shape[0] ({actual_points}) == parent_offset[-1] ({total_parent_points})")
-            else:
-                print(f"   ❌ Parent Offset 验证失败: parent_coord.shape[0] ({actual_points}) != parent_offset[-1] ({total_parent_points})")
-        
-        # 🔥 与 parent_batch 对比验证
-        if "parent_batch" in batch:
-            parent_batch = batch["parent_batch"]
-            print(f"\n   🔍 与 parent_batch 对比验证:")
+        if "offset" in local:
+            offset = local["offset"]
+            print(f"\n   Offset 分析:")
+            print(f"   - Offset: {offset.tolist()}")
+            print(f"   - Batch size: {len(offset)}")
             
-            # 从 parent_batch 计算预期的 parent_offset
-            counts = torch.bincount(parent_batch.long())
-            expected_offset = torch.cat([
-                torch.tensor([0]),
-                torch.cumsum(counts, dim=0)
-            ])
+            print(f"\n   各样本的局部点云点数:")
+            start = 0
+            for i in range(len(offset)):
+                n_points = offset[i] - start
+                print(f"      Sample {i}: {n_points:6d} points (range: [{start:6d}, {offset[i]:6d}))")
+                start = offset[i]
             
-            print(f"      - 从 parent_batch 计算的 offset: {expected_offset.tolist()}")
-            print(f"      - 实际 parent_offset:           {parent_offset.tolist()}")
+            total_points = offset[-1].item()
+            print(f"\n   ✅ 总局部点数: {total_points}")
             
-            if torch.equal(expected_offset, parent_offset):
-                print(f"      ✅ Parent Offset 与 parent_batch 一致！")
-            else:
-                print(f"      ❌ Parent Offset 与 parent_batch 不一致！")
-    else:
-        print(f"\n4️⃣  父点云 Parent Offset 分析:")
-        print(f"   ❌ 缺少 'parent_offset' 字段！")
-        print(f"   ⚠️  请检查 point_collate_fn 是否正确生成了 parent_offset")
+            if "coord" in local:
+                actual_points = local["coord"].shape[0]
+                if actual_points == total_points:
+                    print(f"   ✅ Offset 验证通过: coord.shape[0] == offset[-1]")
+                else:
+                    print(f"   ❌ Offset 验证失败: {actual_points} != {total_points}")
     
-    # 🔥 分析父点云（使用 parent_batch）
-    if "parent_coord" in batch:
-        parent_coord = batch["parent_coord"]
-        print(f"\n5️⃣  父点云详细分析:")
-        print(f"   - parent_coord shape: {parent_coord.shape}")
-        if "parent_color" in batch:
-            print(f"   - parent_color shape: {batch['parent_color'].shape}")
-        if "parent_grid_coord" in batch:
-            print(f"   - parent_grid_coord shape: {batch['parent_grid_coord'].shape}")
+    # 分析父点云（parent）
+    if "parent" in batch:
+        print(f"\n3️⃣  父点云 (parent):")
+        parent = batch["parent"]
+        print(f"   - Keys: {list(parent.keys())}")
         
-        if "parent_batch" in batch:
-            parent_batch = batch["parent_batch"]
-            print(f"   - parent_batch shape: {parent_batch.shape}")
+        for key in ["coord", "grid_coord", "feat", "offset", "name"]:
+            if key in parent:
+                value = parent[key]
+                if isinstance(value, torch.Tensor):
+                    print(f"   ✅ {key:15s}: shape={str(value.shape):20s} dtype={value.dtype}")
+                elif isinstance(value, list):
+                    print(f"   ✅ {key:15s}: list of {len(value)} items")
+                else:
+                    print(f"   ✅ {key:15s}: {type(value).__name__}")
+        
+        if "offset" in parent:
+            offset = parent["offset"]
+            print(f"\n   Offset 分析:")
+            print(f"   - Offset: {offset.tolist()}")
+            print(f"   - Batch size: {len(offset)}")
             
-            # 统计每个样本的父点云点数
-            unique_batches = torch.unique(parent_batch)
-            print(f"\n   各样本的父点云点数（从 parent_batch 统计）:")
-            for b_idx in unique_batches:
-                mask = parent_batch == b_idx
-                n_parent_points = mask.sum().item()
-                print(f"      Sample {b_idx}: {n_parent_points:6d} points")
+            print(f"\n   各样本的父点云点数:")
+            start = 0
+            for i in range(len(offset)):
+                n_points = offset[i] - start
+                print(f"      Sample {i}: {n_points:6d} points (range: [{start:6d}, {offset[i]:6d}))")
+                start = offset[i]
             
-            print(f"\n   总父点云点数: {len(parent_batch)}")
+            total_points = offset[-1].item()
+            print(f"\n   ✅ 总父点云点数: {total_points}")
+            
+            if "coord" in parent:
+                actual_points = parent["coord"].shape[0]
+                if actual_points == total_points:
+                    print(f"   ✅ Offset 验证通过: coord.shape[0] == offset[-1]")
+                else:
+                    print(f"   ❌ Offset 验证失败: {actual_points} != {total_points}")
     
-    # 🔥 对比局部点云和父点云的点数
-    if "offset" in batch and "parent_offset" in batch:
-        print(f"\n6️⃣  局部点云 vs 父点云 点数对比:")
-        offset = batch["offset"]
-        parent_offset = batch["parent_offset"]
-        
-        print(f"   {'Sample':<10} {'Local Points':<15} {'Parent Points':<15} {'Ratio':<10}")
-        print(f"   {'-'*10} {'-'*15} {'-'*15} {'-'*10}")
-        
-        for i in range(len(offset) - 1):
-            local_n = (offset[i + 1] - offset[i]).item()
-            parent_n = (parent_offset[i + 1] - parent_offset[i]).item()
-            ratio = parent_n / local_n if local_n > 0 else 0
-            print(f"   {i:<10} {local_n:<15} {parent_n:<15} {ratio:<10.2f}x")
+    # 对比局部点云和父点云
+    if "local" in batch and "parent" in batch:
+        if "offset" in batch["local"] and "offset" in batch["parent"]:
+            print(f"\n4️⃣  局部点云 vs 父点云:")
+            local_offset = batch["local"]["offset"]
+            parent_offset = batch["parent"]["offset"]
+            
+            print(f"   {'Sample':<10} {'Local Points':<15} {'Parent Points':<15} {'Ratio':<10}")
+            print(f"   {'-'*10} {'-'*15} {'-'*15} {'-'*10}")
+            
+            local_start = 0
+            parent_start = 0
+            for i in range(len(local_offset)):
+                local_n = local_offset[i] - local_start
+                parent_n = parent_offset[i] - parent_start
+                ratio = parent_n / local_n if local_n > 0 else 0
+                print(f"   {i:<10} {local_n:<15} {parent_n:<15} {ratio:<10.2f}x")
+                local_start = local_offset[i]
+                parent_start = parent_offset[i]
     
-    # 🔥 分析归一化参数
+    # 分析归一化参数
     if "norm_offset" in batch or "norm_scale" in batch:
-        print(f"\n7️⃣  归一化参数:")
+        print(f"\n5️⃣  归一化参数:")
         if "norm_offset" in batch:
             norm_offset = batch["norm_offset"]
-            print(f"   - norm_offset shape: {norm_offset.shape}")
-            if norm_offset.dim() == 2:
-                for i in range(min(norm_offset.shape[0], 5)):  # 最多显示 5 个
-                    print(f"      Sample {i}: [{norm_offset[i, 0]:.3f}, {norm_offset[i, 1]:.3f}, {norm_offset[i, 2]:.3f}]")
+            if isinstance(norm_offset, torch.Tensor):
+                print(f"   - norm_offset shape: {norm_offset.shape}")
+                if norm_offset.dim() == 2:
+                    for i in range(min(norm_offset.shape[0], 3)):
+                        print(f"      Sample {i}: [{norm_offset[i, 0]:.3f}, {norm_offset[i, 1]:.3f}, {norm_offset[i, 2]:.3f}]")
+            else:
+                print(f"   - norm_offset: list of {len(norm_offset)} items")
         
         if "norm_scale" in batch:
             norm_scale = batch["norm_scale"]
-            print(f"   - norm_scale shape: {norm_scale.shape}")
-            if norm_scale.dim() == 1:
-                for i in range(min(norm_scale.shape[0], 5)):  # 最多显示 5 个
-                    print(f"      Sample {i}: {norm_scale[i].item():.6f}")
+            if isinstance(norm_scale, torch.Tensor):
+                print(f"   - norm_scale shape: {norm_scale.shape}")
+                if norm_scale.dim() == 1:
+                    for i in range(min(norm_scale.shape[0], 3)):
+                        print(f"      Sample {i}: {norm_scale[i].item():.6f}")
+                elif norm_scale.dim() == 2:
+                    for i in range(min(norm_scale.shape[0], 3)):
+                        print(f"      Sample {i}: [{norm_scale[i, 0]:.6f}, {norm_scale[i, 1]:.6f}, {norm_scale[i, 2]:.6f}]")
+            else:
+                print(f"   - norm_scale: list of {len(norm_scale)} items")
     
-    # 🔥 分析 GT
-    if "gt_position" in batch:
-        gt_position = batch["gt_position"]
-        print(f"\n8️⃣  Ground Truth:")
+    # 分析 GT
+    if "local" in batch and "gt_position" in batch["local"]:
+        gt_position = batch["local"]["gt_position"]
+        print(f"\n6️⃣  Ground Truth:")
         print(f"   - gt_position shape: {gt_position.shape}")
-        for j in range(min(gt_position.shape[0], 5)):  # 最多显示 5 个
+        for j in range(min(gt_position.shape[0], 3)):
             print(f"      Sample {j}: [{gt_position[j, 0]:.6f}, {gt_position[j, 1]:.6f}, {gt_position[j, 2]:.6f}]")
     
-    # 🔥 分析类别
-    if "category_id" in batch:
-        category_id = batch["category_id"]
-        print(f"\n9️⃣  类别 ID:")
-        print(f"   - category_id shape: {category_id.shape}")
-        
-        category_names = {0: "Scissors", 1: "Cup", 2: "Avocado"}
-        for j in range(min(category_id.shape[0], 5)):  # 最多显示 5 个
-            cat_id = category_id[j].item()
-            cat_name = category_names.get(cat_id, "Unknown")
-            print(f"      Sample {j}: {cat_id} ({cat_name})")
+    # 分析样本名称
+    if "local" in batch and "name" in batch["local"]:
+        print(f"\n7️⃣  样本名称:")
+        print(f"   局部点云:")
+        for j, name in enumerate(batch["local"]["name"][:3]):
+            print(f"      Sample {j}: {name}")
     
-    # 🔥 分析样本名称
-    if "name" in batch:
-        print(f"\n🔟 样本名称:")
-        for j, name in enumerate(batch['name'][:5]):  # 最多显示 5 个
+    if "parent" in batch and "name" in batch["parent"]:
+        print(f"   父点云:")
+        for j, name in enumerate(batch["parent"]["name"][:3]):
             print(f"      Sample {j}: {name}")
     
     print(f"\n{'─' * 80}\n")
+
+
+def test_single_sample():
+    """测试单个样本的数据结构"""
+    print_separator("🔬 测试单个样本")
+    
+    cfg = Config.fromfile("/home/ypf/PointTransformerV3_Simple/configs/s3dis/semseg-pt-v3m1-gelsight.py")
+    
+    print(f"\n📂 加载训练集...")
+    train_dataset = build_dataset(cfg.data.train)
+    
+    print(f"\n📦 获取 Sample 0...")
+    sample = train_dataset[0]
+    
+    print(f"\n   ✅ 样本获取成功!")
+    print(f"   - Type: {type(sample)}")
+    print(f"   - Top-level Keys: {list(sample.keys())}")
+    
+    # 分析局部点云
+    if "local" in sample:
+        print(f"\n   局部点云 (local):")
+        local = sample["local"]
+        print(f"   - Keys: {list(local.keys())}")
+        for key, value in local.items():
+            if isinstance(value, torch.Tensor):
+                print(f"      ✅ {key:15s}: shape={str(value.shape):20s} dtype={value.dtype}")
+            else:
+                print(f"      ✅ {key:15s}: {type(value).__name__}")
+    
+    # 分析父点云
+    if "parent" in sample:
+        print(f"\n   父点云 (parent):")
+        parent = sample["parent"]
+        print(f"   - Keys: {list(parent.keys())}")
+        for key, value in parent.items():
+            if isinstance(value, torch.Tensor):
+                print(f"      ✅ {key:15s}: shape={str(value.shape):20s} dtype={value.dtype}")
+            else:
+                print(f"      ✅ {key:15s}: {type(value).__name__}")
+    
+    # 分析归一化参数
+    if "norm_offset" in sample:
+        print(f"\n   归一化参数:")
+        print(f"   - norm_offset: {sample['norm_offset']}")
+        print(f"   - norm_scale: {sample['norm_scale']}")
+    
+    print_separator("✅ 单个样本测试完成")
+
+
+def test_collate_fn():
+    """测试 collate_fn"""
+    print_separator("🔧 测试 point_collate_fn")
+    
+    cfg = Config.fromfile("/home/ypf/PointTransformerV3_Simple/configs/s3dis/semseg-pt-v3m1-gelsight.py")
+    
+    print(f"\n📂 加载训练集...")
+    train_dataset = build_dataset(cfg.data.train)
+    
+    print(f"\n📦 手动获取 3 个样本...")
+    samples = [train_dataset[i] for i in range(3)]
+    
+    print(f"\n   各样本的结构:")
+    for i, sample in enumerate(samples):
+        print(f"   Sample {i}:")
+        print(f"      - Top-level keys: {list(sample.keys())}")
+        
+        if "local" in sample and "coord" in sample["local"]:
+            local_n = sample["local"]["coord"].shape[0]
+            print(f"      - 局部点数: {local_n}")
+        
+        if "parent" in sample and "coord" in sample["parent"]:
+            parent_n = sample["parent"]["coord"].shape[0]
+            print(f"      - 父点云点数: {parent_n}")
+    
+    print(f"\n🔧 调用 point_collate_fn...")
+    batch = point_collate_fn(samples, mix_prob=0.0)
+    
+    print(f"\n   ✅ Collate 成功!")
+    print(f"   Batch top-level keys: {list(batch.keys())}")
+    
+    if "local" in batch:
+        print(f"   Batch local keys: {list(batch['local'].keys())}")
+    if "parent" in batch:
+        print(f"   Batch parent keys: {list(batch['parent'].keys())}")
+    
+    analyze_batch(batch, 0)
+    
+    print_separator("✅ point_collate_fn 测试完成")
 
 
 def test_train_dataloader():
@@ -221,7 +279,6 @@ def test_train_dataloader():
     print(f"      - 数据集类型: {type(train_dataset).__name__}")
     print(f"      - 样本数量: {len(train_dataset)}")
     print(f"      - Split: {train_dataset.split}")
-    print(f"      - Parent cache size: {train_dataset.max_cache_size}")
     
     batch_size = 4
     train_loader = DataLoader(
@@ -237,14 +294,12 @@ def test_train_dataloader():
     print(f"   ✅ DataLoader 创建成功!")
     print(f"      - Batch size: {batch_size}")
     print(f"      - Total batches: {len(train_loader)}")
-    print(f"      - Collate function: point_collate_fn (mix_prob=0.0)")
     
     print_separator("🔍 测试前 2 个 Batch")
     
     for i, batch in enumerate(train_loader):
         if i >= 2:
             break
-        
         analyze_batch(batch, i)
     
     print_separator("✅ 训练集 DataLoader 测试完成")
@@ -284,102 +339,9 @@ def test_val_dataloader():
     for i, batch in enumerate(val_loader):
         if i >= 1:
             break
-        
         analyze_batch(batch, i)
     
     print_separator("✅ 验证集 DataLoader 测试完成")
-
-
-def test_collate_fn():
-    """测试 collate_fn 是否正确处理父点云"""
-    print_separator("🔧 测试 point_collate_fn")
-    
-    cfg = Config.fromfile("/home/ypf/PointTransformerV3_Simple/configs/s3dis/semseg-pt-v3m1-gelsight.py")
-    
-    print(f"\n📂 加载训练集...")
-    train_dataset = build_dataset(cfg.data.train)
-    
-    # 手动获取几个样本
-    print(f"\n📦 手动获取 3 个样本...")
-    samples = [train_dataset[i] for i in range(3)]
-    
-    print(f"\n   各样本的 keys:")
-    for i, sample in enumerate(samples):
-        print(f"   Sample {i}: {list(sample.keys())}")
-        
-        # 🔥 显示每个样本的点数
-        if "coord" in sample:
-            local_n = sample["coord"].shape[0]
-            print(f"      - 局部点数: {local_n}")
-        
-        if "parent_coord" in sample:
-            parent_n = sample["parent_coord"].shape[0]
-            print(f"      - 父点云点数: {parent_n}")
-    
-    # 使用 collate_fn
-    print(f"\n🔧 调用 point_collate_fn...")
-    batch = point_collate_fn(samples, mix_prob=0.0)
-    
-    print(f"\n   ✅ Collate 成功!")
-    print(f"   Batch keys: {list(batch.keys())}")
-    
-    # 🔥 重点检查 parent_offset
-    if "parent_offset" in batch:
-        print(f"\n   ✅ 成功生成 parent_offset!")
-        print(f"      - parent_offset: {batch['parent_offset'].tolist()}")
-    else:
-        print(f"\n   ❌ 未生成 parent_offset!")
-        print(f"   ⚠️  可能的问题:")
-        print(f"      1. point_collate_fn 没有生成 parent_offset")
-        print(f"      2. parent_data 中没有 parent_batch")
-    
-    # 分析结果
-    analyze_batch(batch, 0)
-    
-    print_separator("✅ point_collate_fn 测试完成")
-
-
-def test_single_sample():
-    """测试单个样本的数据结构"""
-    print_separator("🔬 测试单个样本")
-    
-    cfg = Config.fromfile("/home/ypf/PointTransformerV3_Simple/configs/s3dis/semseg-pt-v3m1-gelsight.py")
-    
-    print(f"\n📂 加载训练集...")
-    train_dataset = build_dataset(cfg.data.train)
-    
-    print(f"\n📦 获取 Sample 0...")
-    sample = train_dataset[0]
-    
-    print(f"\n   ✅ 样本获取成功!")
-    print(f"   - Type: {type(sample)}")
-    print(f"   - Keys: {list(sample.keys())}")
-    
-    print(f"\n   详细字段分析:")
-    for key, value in sample.items():
-        if isinstance(value, torch.Tensor):
-            print(f"   ✅ {key:20s}: shape={str(value.shape):20s} dtype={value.dtype}")
-        elif isinstance(value, (int, float)):
-            print(f"   ✅ {key:20s}: {type(value).__name__}={value}")
-        elif isinstance(value, str):
-            print(f"   ✅ {key:20s}: '{value}'")
-        else:
-            print(f"   ⚠️  {key:20s}: {type(value)}")
-    
-    # 🔥 检查父点云字段
-    print(f"\n   父点云字段检查:")
-    parent_fields = ["parent_coord", "parent_color", "parent_grid_coord"]
-    for field in parent_fields:
-        if field in sample:
-            value = sample[field]
-            if isinstance(value, torch.Tensor):
-                print(f"      ✅ {field}: shape={value.shape}")
-            else:
-                print(f"      ✅ {field}: {type(value).__name__}={value}")
-        else:
-            print(f"      ❌ {field}: 缺失")
-    
-    print_separator("✅ 单个样本测试完成")
 
 
 def main():
@@ -389,16 +351,9 @@ def main():
     print("🚀" * 40)
     
     try:
-        # 1. 测试单个样本
         test_single_sample()
-        
-        # 2. 测试 collate_fn
         test_collate_fn()
-        
-        # 3. 测试训练集
         test_train_dataloader()
-        
-        # 4. 测试验证集
         test_val_dataloader()
         
         print("\n" + "🎉" * 40)

@@ -691,14 +691,24 @@ class ContactPositionDataset(Dataset):
         
         if self.parent_transform is not None:
             parent_dict = self.parent_transform(parent_dict)
-        
+
+        gt_position = data_dict.pop("gt_position", None)
+        name = data_dict.pop("name", None)
+        category_id = data_dict.pop("category_id", None)
+
         result = {
             "local": data_dict,
             "parent": parent_dict,
             "norm_offset": norm_offset,
             "norm_scale": norm_scale,
         }
-        
+        if gt_position is not None:
+            result["gt_position"] = gt_position
+        if name is not None:
+            result["name"] = name        
+        if category_id is not None:
+            result["category_id"] = category_id 
+                   
         return result
     
     def prepare_test_data(self, idx):

@@ -88,19 +88,24 @@ def point_collate_fn(batch, mix_prob=0):
     
     for key in top_level_keys:
         values = [sample[key] for sample in batch]
+        if not values:
+            result[key] = values
+            continue
         
-        # 转换为 Tensor
-        tensor_values = []
-        for v in values:
-            if not isinstance(v, torch.Tensor):
-                v = torch.as_tensor(v)
-            tensor_values.append(v)
-        
-        # 尝试 stack，失败则保留 list
-        try:
-            result[key] = torch.stack(tensor_values)
-        except:
-            result[key] = tensor_values
+        first_value = values[0]
+        if isinstance(first_value, str):
+            result[key] = values
+        elif isinstance(first_value, torch.Tensor):
+            try:
+                result[key] = torch.stack(values)
+            except:
+                result[key] = values
+        else:
+            try:
+                tensor_values = [torch.as_tensor(v) for v in values]
+                result[key] = torch.stack(tensor_values)
+            except:
+                result[key] = values
     
     if random.random() < mix_prob:
         if "instance" in batch.keys():
@@ -167,7 +172,7 @@ def point_collate_fn(batch, mix_prob=0):
                 ]
             batch[correspondence_asset] = batch_correspondence_mix
     
-    return batch
+    return result # if use PTV3 should modify result to batch
 
 
 def gaussian_kernel(dist2: np.array, a: float = 1, c: float = 5):
