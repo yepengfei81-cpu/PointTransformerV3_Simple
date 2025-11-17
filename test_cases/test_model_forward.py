@@ -13,6 +13,17 @@ from pointcept.utils.config import Config
 from pointcept.models import build_model
 
 
+def recursive_to_device(data, device):
+    if isinstance(data, dict):
+        return {key: recursive_to_device(value, device) for key, value in data.items()}
+    elif isinstance(data, (list, tuple)):
+        result = [recursive_to_device(item, device) for item in data]
+        return type(data)(result)
+    elif isinstance(data, torch.Tensor):
+        return data.to(device)
+    else:
+        return data
+    
 def test_model_forward():
     print("=" * 80)
     print("Testing Model Forward Pass...")
@@ -96,64 +107,55 @@ def test_model_forward():
         traceback.print_exc()
         return
     
-    print(f"   ✅ Batch loaded")
-    print(f"   Keys: {list(batch.keys())}")
-    
-    # 🔥 修复：添加父点云字段检查
-    required_keys = ['coord', 'offset', 'gt_position']
-    optional_keys = [
-        'feat', 'color', 'grid_coord', 'category_id', 
-        'norm_offset', 'norm_scale',
-        'parent_coord', 'parent_color', 'batch'  # 🔥 新增
-    ]
-    
-    print(f"\n   📋 Required fields:")
+    print(f"\n   📋 Checking nested structure...")
+    top_level_required = ['local', 'parent', 'gt_position']
     missing_required = []
-    for key in required_keys:
+
+    for key in top_level_required:
         if key in batch:
-            if isinstance(batch[key], torch.Tensor):
-                print(f"      ✅ {key}: shape={batch[key].shape}, dtype={batch[key].dtype}")
-            else:
-                print(f"      ✅ {key}: {batch[key]}")
+            if isinstance(batch[key], dict):
+                print(f"      ✅ {key}: {list(batch[key].keys())}")
+            elif isinstance(batch[key], torch.Tensor):
+                print(f"      ✅ {key}: {batch[key].shape}")
         else:
             print(f"      ❌ {key}: MISSING!")
             missing_required.append(key)
-    
+
     if missing_required:
         print(f"\n   ❌ Missing required fields: {missing_required}")
-        print(f"   ❌ Cannot continue test!")
         return
-    
-    print(f"\n   📋 Optional fields:")
-    for key in optional_keys:
-        if key in batch:
-            if isinstance(batch[key], torch.Tensor):
-                print(f"      ✅ {key}: shape={batch[key].shape}, dtype={batch[key].dtype}")
-            else:
-                print(f"      ✅ {key}: {batch[key]}")
-        else:
-            print(f"      ⚠️  {key}: not present")
-    
-    # 🔥 新增：父点云状态检查
-    print(f"\n   📊 Parent cloud status:")
-    if 'parent_coord' in batch:
-        print(f"      ✅ Parent cloud is present")
-        print(f"         - parent_coord: {batch['parent_coord'].shape}")
-        if 'parent_color' in batch:
-            print(f"         - parent_color: {batch['parent_color'].shape}")
-        if 'batch' in batch:
-            print(f"         - batch indices: {batch['batch'].shape}")
-            print(f"         - unique batch IDs: {torch.unique(batch['batch']).tolist()}")
-    else:
-        print(f"      ⚠️  Parent cloud is NOT present")
-        print(f"         This is expected if use_parent_cloud=False in dataset")
-        if hasattr(cfg, 'model') and cfg.model.get('use_parent_cloud', False):
-            print(f"         ⚠️  WARNING: Model expects parent cloud but dataset doesn't provide it!")
+
+    if "local" in batch:
+        print(f"\n   📋 Local cloud:")
+        for key in ['coord', 'grid_coord', 'feat', 'offset']:
+            if key in batch["local"] and isinstance(batch["local"][key], torch.Tensor):
+                print(f"      {key}: {batch['local'][key].shape}")
+
+    if "parent" in batch:
+        print(f"\n   📋 Parent cloud:")
+        for key in ['coord', 'grid_coord', 'feat', 'offset']:
+            if key in batch["parent"] and isinstance(batch["parent"][key], torch.Tensor):
+                print(f"      {key}: {batch['parent'][key].shape}")
+
+    print(f"\n   📋 Normalization:")
+    for key in ['norm_offset', 'norm_scale', 'category_id']:
+        if key in batch and isinstance(batch[key], torch.Tensor):
+            print(f"      {key}: {batch[key].shape}")
+
+    print(f"\n   📊 Point cloud stats:")
+    if "local" in batch and "offset" in batch["local"]:
+        local_offset = batch["local"]["offset"]
+        print(f"      Local - Total: {batch['local']['coord'].shape[0]}, Batch: {len(local_offset)}")
+
+    if "parent" in batch and "offset" in batch["parent"]:
+        parent_offset = batch["parent"]["offset"]
+        print(f"      Parent - Total: {batch['parent']['coord'].shape[0]}, Batch: {len(parent_offset)}")            
     
     # Move to device
-    for key in batch.keys():
-        if isinstance(batch[key], torch.Tensor):
-            batch[key] = batch[key].to(device)
+    batch = recursive_to_device(batch, device)
+    # for key in batch.keys():
+    #     if isinstance(batch[key], torch.Tensor):
+    #         batch[key] = batch[key].to(device)
     
     print(f"\n   ✅ Batch moved to device: {device}")
     
