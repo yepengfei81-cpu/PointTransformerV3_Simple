@@ -126,7 +126,7 @@ class ContactPositionRegressor(nn.Module):
             nn.Dropout(0.2),
 
             nn.Linear(backbone_out_channels // 4, num_outputs),
-            nn.Sigmoid()
+            # nn.Sigmoid()
         )
 
     # Modular feature extraction
@@ -194,42 +194,14 @@ class ContactPositionRegressor(nn.Module):
         return global_feat
             
     def forward(self, input_dict, return_point=False):       
-        local_dict = {
-            "coord": input_dict["coord"],
-            "feat": input_dict.get("feat", input_dict.get("color", input_dict["coord"])),
-            "grid_coord": input_dict["grid_coord"],
-        }
+        local_dict = input_dict["local"]
+        parent_dict = input_dict["parent"] if self.use_parent_cloud else None
         
-        if "grid_size" in input_dict:
-            local_dict["grid_size"] = input_dict["grid_size"]
-        
-        if "offset" in input_dict:
-            local_dict["offset"] = input_dict["offset"]
-        
-        local_feat = self.extract_features(local_dict, is_parent=False)  # (batch_size, C)
-        
+        local_feat = self.extract_features(local_dict, is_parent=False)
         parent_feat = None
-        if self.use_parent_cloud and "parent_coord" in input_dict:
-            parent_dict = {
-                "coord": input_dict["parent_coord"],
-                "feat": input_dict.get("parent_color", input_dict["parent_coord"]),
-            }
-            
-            if "parent_grid_coord" in input_dict:
-                parent_dict["grid_coord"] = input_dict["parent_grid_coord"]
-            else:
-                raise KeyError(
-                    "Missing 'parent_grid_coord' in input_dict!\n"
-                    "Ensure parent_transform includes GridSample with return_grid_coord=True"
-                )
-            
-            if "parent_grid_size" in input_dict:
-                parent_dict["grid_size"] = input_dict["parent_grid_size"]
-            
-            if "offset" in input_dict:
-                parent_dict["offset"] = input_dict["parent_offset"]
-            parent_feat = self.extract_features(parent_dict, is_parent=True)  # (batch_size, C)
-        
+        if self.use_parent_cloud and parent_dict is not None:
+            parent_feat = self.extract_features(parent_dict, is_parent=True)
+
         if self.use_parent_cloud and parent_feat is not None:
             if self.fusion_type == "concat":
                 global_feat = torch.cat([local_feat, parent_feat], dim=-1)  # (batch_size, 2C)
@@ -292,10 +264,15 @@ class ContactPositionRegressor(nn.Module):
 
         if self.training or "gt_position" in input_dict:
             gt_position_norm = input_dict["gt_position"]
-            gt_position = gt_position_norm * norm_scale + norm_offset
+            if "norm_offset" in input_dict and "norm_scale" in input_dict:
+                gt_position = gt_position_norm * norm_scale + norm_offset
+                pred_for_loss = position_pred 
+            else:
+                gt_position = gt_position_norm
+                pred_for_loss = position_pred_norm
             
-            loss_smooth_l1 = self.criterion_smooth_l1(position_pred, gt_position)
-            loss_mse = self.criterion_mse(position_pred, gt_position)
+            loss_smooth_l1 = self.criterion_smooth_l1(pred_for_loss, gt_position)
+            loss_mse = self.criterion_mse(pred_for_loss, gt_position)
             total_loss = loss_smooth_l1 * 1.0 + loss_mse * 0.5
             
             return_dict["loss"] = total_loss

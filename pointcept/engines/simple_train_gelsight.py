@@ -101,14 +101,27 @@ class RegressionTrainer(TrainerBase):
         if self.cfg.get("empty_cache_per_epoch", False):
             torch.cuda.empty_cache()
 
+    def _recursive_to_cuda(self, data):
+        if isinstance(data, dict):
+            return {key: self._recursive_to_cuda(value) for key, value in data.items()}
+        
+        elif isinstance(data, (list, tuple)):
+            result = [self._recursive_to_cuda(item) for item in data]
+            return type(data)(result)
+        elif isinstance(data, torch.Tensor):
+            return data.cuda(non_blocking=True)
+        else:
+            return data
+    
     def run_step(self):
         """Execute one training step"""
         input_dict = self.comm_info["input_dict"]
         
+        input_dict = self._recursive_to_cuda(input_dict)
         # Move data to GPU
-        for key in input_dict.keys():
-            if isinstance(input_dict[key], torch.Tensor):
-                input_dict[key] = input_dict[key].cuda(non_blocking=True)
+        # for key in input_dict.keys():
+        #     if isinstance(input_dict[key], torch.Tensor):
+        #         input_dict[key] = input_dict[key].cuda(non_blocking=True)
         
         # Zero gradients
         self.optimizer.zero_grad()
