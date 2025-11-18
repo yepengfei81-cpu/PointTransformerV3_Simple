@@ -77,6 +77,51 @@ def test_model_forward():
         
         if isinstance(output, dict):
             print(f"   Output keys: {list(output.keys())}")
+
+            if "loss" in output:
+                loss = output["loss"]
+                print(f"\n   📉 Loss Information:")
+                print(f"      - loss value: {loss.item():.6f}")
+                
+                if torch.isnan(loss):
+                    print(f"      ❌ Loss is NaN!")
+                elif torch.isinf(loss):
+                    print(f"      ❌ Loss is Inf!")
+                else:
+                    print(f"      ✅ Loss is valid")
+            
+            if "pred_position" in output and "gt_position" in batch:
+                pred_norm = output["pred_position"].cpu()
+                gt_norm = batch["gt_position"].cpu()
+                
+                print(f"\n   📍 Predictions (Normalized Space):")
+                for i in range(len(pred_norm)):
+                    pred_i = pred_norm[i]
+                    gt_i = gt_norm[i]
+                    error_norm = torch.norm(pred_i - gt_i).item()
+                    print(f"      Sample {i}:")
+                    print(f"         Pred: [{pred_i[0]:.6f}, {pred_i[1]:.6f}, {pred_i[2]:.6f}]")
+                    print(f"         GT:   [{gt_i[0]:.6f}, {gt_i[1]:.6f}, {gt_i[2]:.6f}]")
+                    print(f"         Error: {error_norm:.6f}")
+                
+                if "pcd_min" in batch and "pcd_size" in batch:
+                    pcd_min = batch["pcd_min"].cpu()
+                    pcd_size = batch["pcd_size"].cpu()
+                    
+                    # real = norm * size + min
+                    pred = pred_norm * pcd_size + pcd_min
+                    gt = gt_norm * pcd_size + pcd_min
+                    
+                    print(f"\n   📍 Predictions (Real Space):")
+                    for i in range(len(pred)):
+                        pred_i = pred[i]
+                        gt_i = gt[i]
+                        error = torch.norm(pred_i - gt_i).item()
+                        print(f"      Sample {i}:")
+                        print(f"         Pred: [{pred_i[0]:.6f}, {pred_i[1]:.6f}, {pred_i[2]:.6f}] m")
+                        print(f"         GT:   [{gt_i[0]:.6f}, {gt_i[1]:.6f}, {gt_i[2]:.6f}] m")
+                        print(f"         Error: {error:.6f} m ({error*1000:.2f} mm)")
+
             for key, value in output.items():
                 if isinstance(value, torch.Tensor):
                     print(f"      - {key}: shape={value.shape}, dtype={value.dtype}, device={value.device}")
