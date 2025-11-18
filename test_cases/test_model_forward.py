@@ -175,27 +175,31 @@ def test_model_forward():
                 if isinstance(value, torch.Tensor):
                     print(f"      - {key}: shape={value.shape}, dtype={value.dtype}, device={value.device}")
             
-            # 预测结果分析
-            if "pred_position" in output and "gt_position" in batch:
-                pred = output["pred_position"].cpu()
-                gt_norm = batch["gt_position"].cpu()
+        if "pred_position" in output and "gt_position" in batch:
+            pred_norm = output["pred_position"].cpu()
+            gt_norm = batch["gt_position"].cpu()
+            
+            print(f"\n   📍 Predictions (Normalized Space):")
+            for i in range(len(pred_norm)):
+                pred_i = pred_norm[i]
+                gt_i = gt_norm[i]
+                error_norm = torch.norm(pred_i - gt_i).item()
+                print(f"      Sample {i}: Pred={pred_i.tolist()}, GT={gt_i.tolist()}, Error={error_norm:.6f}")
+            
+            if "norm_offset" in batch and "norm_scale" in batch:
+                norm_offset = batch["norm_offset"].cpu()
+                norm_scale = batch["norm_scale"].cpu()
                 
-                # 🔥 手动反归一化 GT（用于显示）
-                if "norm_offset" in batch and "norm_scale" in batch:
-                    norm_offset = batch["norm_offset"].cpu()
-                    norm_scale = batch["norm_scale"].cpu()
-                    gt = gt_norm * norm_scale + norm_offset  # 反归一化
-                else:
-                    gt = gt_norm
+                pred = pred_norm * norm_scale + norm_offset
+                gt = gt_norm * norm_scale + norm_offset
                 
-                # 显示
+                print(f"\n   📍 Predictions (Real Space):")
                 for i in range(len(pred)):
                     pred_i = pred[i]
                     gt_i = gt[i]
                     error = torch.norm(pred_i - gt_i).item()
-                    print(f"   Sample {i}: Pred={pred_i.tolist()}, GT={gt_i.tolist()}, Error={error:.4f}")
+                    print(f"      Sample {i}: Pred={pred_i.tolist()}, GT={gt_i.tolist()}, Error={error:.6f}m ({error*1000:.2f}mm)")
             
-            # 检查 loss
             if "loss" in output:
                 loss = output["loss"]
                 print(f"\n      📉 Loss: {loss.item():.6f}")

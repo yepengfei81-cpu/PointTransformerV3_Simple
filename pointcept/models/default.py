@@ -235,26 +235,6 @@ class ContactPositionRegressor(nn.Module):
             global_feat = torch.cat([global_feat, category_emb], dim=-1)  # (batch_size, C + emb_dim)
         
         position_pred_norm = self.regression_head(global_feat)  # (batch_size, 3)
-        if "norm_offset" in input_dict and "norm_scale" in input_dict:
-            norm_offset = input_dict["norm_offset"]  # (batch_size, 3)
-            norm_scale = input_dict["norm_scale"]    # (batch_size, 3) 
-
-            if norm_offset.shape != position_pred_norm.shape:
-                raise ValueError(
-                    f"norm_offset shape {norm_offset.shape} != position_pred_norm shape {position_pred_norm.shape}"
-                )
-            
-            if norm_scale.shape != position_pred_norm.shape:
-                raise ValueError(
-                    f"norm_scale shape {norm_scale.shape} != position_pred_norm shape {position_pred_norm.shape}"
-                )
-            
-            # world_coord = norm_coord * range + min
-            position_pred = position_pred_norm * norm_scale + norm_offset
-        else:
-            print(f"\n⚠️  Missing norm_offset or norm_scale, using normalized prediction")
-            position_pred = position_pred_norm
-        
         return_dict = {}
         
         if return_point:
@@ -263,24 +243,16 @@ class ContactPositionRegressor(nn.Module):
             return_dict["global_feat"] = global_feat
 
         if self.training or "gt_position" in input_dict:
-            gt_position_norm = input_dict["gt_position"]
-            if "norm_offset" in input_dict and "norm_scale" in input_dict:
-                gt_position = gt_position_norm * norm_scale + norm_offset
-                pred_for_loss = position_pred 
-            else:
-                gt_position = gt_position_norm
-                pred_for_loss = position_pred_norm
-            
-            loss_smooth_l1 = self.criterion_smooth_l1(pred_for_loss, gt_position)
-            loss_mse = self.criterion_mse(pred_for_loss, gt_position)
+            gt_position_norm = input_dict["gt_position"]  # (batch_size, 3)
+            loss_smooth_l1 = self.criterion_smooth_l1(position_pred_norm, gt_position_norm)
+            loss_mse = self.criterion_mse(position_pred_norm, gt_position_norm)
             total_loss = loss_smooth_l1 * 1.0 + loss_mse * 0.5
             
             return_dict["loss"] = total_loss
-            
             if not self.training:
-                return_dict["pred_position"] = position_pred
+                return_dict["pred_position"] = position_pred_norm
         else:
-            return_dict["pred_position"] = position_pred
+            return_dict["pred_position"] = position_pred_norm
         
         return return_dict
 
