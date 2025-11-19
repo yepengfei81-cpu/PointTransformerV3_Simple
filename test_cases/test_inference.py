@@ -86,70 +86,109 @@ class PTv3ContactMatcher:
         print(f"   推理设备: {self.device}")
     
     def predict(self, input_dict: Dict, verbose: bool = False) -> np.ndarray:
-        """
-        预测接触点位置
+        model_input = {
+            'local': {},
+            'parent': {},
+        }
         
-        Args:
-            input_dict: 包含点云数据的字典
-            verbose: 是否打印详细信息
+        if 'local' not in input_dict:
+            raise KeyError("Missing 'local' key in input_dict")
         
-        Returns:
-            pred_position: (3,) 预测的接触点位置（归一化空间）
-        """
-        model_input = {}
+        if hasattr(self.model, 'use_parent_cloud') and self.model.use_parent_cloud:
+            if 'parent' not in input_dict:
+                raise KeyError("Missing 'parent' key in input_dict (required when use_parent_cloud=True)")
         
-        num_points = None
-        
+        local_data = input_dict['local']
+        num_local_points = None
         for key in ['coord', 'feat', 'grid_coord']:
-            if key in input_dict:
-                value = input_dict[key]
+            if key not in local_data:
+                raise KeyError(f"Missing '{key}' in input_dict['local']")
+            
+            value = local_data[key]
+            
+            if isinstance(value, np.ndarray):
+                value = torch.from_numpy(value)
+            elif not isinstance(value, torch.Tensor):
+                value = torch.tensor(value)
+            
+            if num_local_points is None:
+                num_local_points = value.shape[0]
+
+            if key in ['coord', 'feat']:
+                value = value.float()
+            elif key == 'grid_coord':
+                value = value.long()
+            
+            model_input['local'][key] = value.to(self.device) 
+
+        # local point cloud batch and offset
+        if 'batch' in local_data:
+            batch = local_data['batch']
+            if isinstance(batch, np.ndarray):
+                batch = torch.from_numpy(batch).long()
+            elif not isinstance(batch, torch.Tensor):
+                batch = torch.tensor(batch).long()
+            model_input['local']['batch'] = batch.to(self.device)
+        else:
+            model_input['local']['batch'] = torch.zeros(num_local_points, dtype=torch.long, device=self.device)
+        
+        if 'offset' in local_data:
+            offset = local_data['offset']
+            if isinstance(offset, np.ndarray):
+                offset = torch.from_numpy(offset).long()
+            elif not isinstance(offset, torch.Tensor):
+                offset = torch.tensor(offset).long()
+            model_input['local']['offset'] = offset.to(self.device)
+        else:
+            model_input['local']['offset'] = torch.tensor([num_local_points], dtype=torch.long, device=self.device)
+            
+        # deal parent point cloud    
+        if hasattr(self.model, 'use_parent_cloud') and self.model.use_parent_cloud:
+            parent_data = input_dict['parent']
+            num_parent_points = None
+            
+            for key in ['coord', 'feat', 'grid_coord']:
+                if key not in parent_data:
+                    raise KeyError(f"Missing '{key}' in input_dict['parent']")
                 
+                value = parent_data[key]
                 if isinstance(value, np.ndarray):
-                    value = torch.from_numpy(value).float()
+                    value = torch.from_numpy(value)
                 elif not isinstance(value, torch.Tensor):
-                    value = torch.tensor(value).float()
-                
-                if num_points is None:
-                    num_points = value.shape[0]
-                
+                    value = torch.tensor(value)
+
+                if num_parent_points is None:
+                    num_parent_points = value.shape[0]
+
                 if key in ['coord', 'feat']:
                     value = value.float()
                 elif key == 'grid_coord':
                     value = value.long()
                 
-                model_input[key] = value.to(self.device)
-        
-        if 'batch' not in input_dict:
-            model_input['batch'] = torch.zeros(num_points, dtype=torch.long).to(self.device)
-        else:
-            batch = input_dict['batch']
-            if isinstance(batch, np.ndarray):
-                batch = torch.from_numpy(batch).long()
-            elif not isinstance(batch, torch.Tensor):
-                batch = torch.tensor(batch).long()
-            model_input['batch'] = batch.to(self.device)
-        
-        if 'offset' not in input_dict:
-            model_input['offset'] = torch.tensor([num_points], dtype=torch.long).to(self.device)
-        else:
-            offset = input_dict['offset']
-            if isinstance(offset, np.ndarray):
-                offset = torch.from_numpy(offset).long()
-            elif not isinstance(offset, torch.Tensor):
-                offset = torch.tensor(offset).long()
-            model_input['offset'] = offset.to(self.device)
-        
-        if 'grid_size' not in input_dict:
-            grid_size = 0.002
-            if hasattr(self.cfg, 'data'):
-                data_cfg = self.cfg.data
-                if 'train' in data_cfg and 'transform' in data_cfg['train']:
-                    for transform in data_cfg['train']['transform']:
-                        if isinstance(transform, dict) and transform.get('type') == 'GridSample':
-                            grid_size = transform.get('grid_size', 0.002)
-                            break
-            model_input['grid_size'] = torch.tensor(grid_size, dtype=torch.float32).to(self.device)
-        else:
+                model_input['parent'][key] = value.to(self.device)
+            # parent point cloud batch and offset    
+            if 'batch' in parent_data:
+                batch = parent_data['batch']
+                if isinstance(batch, np.ndarray):
+                    batch = torch.from_numpy(batch).long()
+                elif not isinstance(batch, torch.Tensor):
+                    batch = torch.tensor(batch).long()
+                model_input['parent']['batch'] = batch.to(self.device)
+            else:
+                model_input['parent']['batch'] = torch.zeros(num_parent_points, dtype=torch.long, device=self.device)
+            
+            if 'offset' in parent_data:
+                offset = parent_data['offset']
+                if isinstance(offset, np.ndarray):
+                    offset = torch.from_numpy(offset).long()
+                elif not isinstance(offset, torch.Tensor):
+                    offset = torch.tensor(offset).long()
+                model_input['parent']['offset'] = offset.to(self.device)
+            else:
+                model_input['parent']['offset'] = torch.tensor([num_parent_points], dtype=torch.long, device=self.device)     
+
+        # deal whole model input
+        if 'grid_size' in input_dict:
             grid_size = input_dict['grid_size']
             if isinstance(grid_size, (int, float)):
                 grid_size = torch.tensor(grid_size, dtype=torch.float32)
@@ -158,37 +197,51 @@ class PTv3ContactMatcher:
             elif not isinstance(grid_size, torch.Tensor):
                 grid_size = torch.tensor(grid_size).float()
             model_input['grid_size'] = grid_size.to(self.device)
-        
+
         if 'category_id' in input_dict:
             category_id = input_dict['category_id']
             
             if isinstance(category_id, np.ndarray):
                 category_id = torch.from_numpy(category_id).long()
             elif isinstance(category_id, (int, np.integer)):
-                category_id = torch.tensor(category_id).long()
+                category_id = torch.tensor(category_id, dtype=torch.long)
             elif not isinstance(category_id, torch.Tensor):
                 category_id = torch.tensor(category_id).long()
-            
+
             if category_id.dim() == 0:
                 category_id = category_id.unsqueeze(0)
             
-            model_input['category_id'] = category_id.to(self.device)
-            
-            if verbose:
-                cat_names = ["Scissors", "Cup", "Avocado"]
-                cat_id = category_id.item() if category_id.dim() == 1 else category_id[0].item()
-                if 0 <= cat_id < len(cat_names):
-                    print(f"   🏷️  物体类别: {cat_names[cat_id]} (ID={cat_id})")
+            model_input['category_id'] = category_id.to(self.device)        
+
+        # print debug information
+        print("\n📊 模型输入:")
+        print(f"   use_parent_cloud: {getattr(self.model, 'use_parent_cloud', False)}")
+        print(f"   fusion_type: {getattr(self.model, 'fusion_type', 'N/A')}")
         
-        if verbose:
-            print("\n📊 模型输入:")
-            for key, value in model_input.items():
+        if 'local' in model_input:
+            print(f"\n   局部点云:")
+            for key, value in model_input['local'].items():
                 if isinstance(value, torch.Tensor):
-                    if value.dim() == 0:
-                        print(f"   {key}: 标量值={value.item()}, dtype={value.dtype}")
-                    else:
-                        print(f"   {key}: shape={value.shape}, dtype={value.dtype}")
+                    print(f"      {key}: shape={value.shape}, dtype={value.dtype}")
         
+        if 'parent' in model_input and len(model_input['parent']) > 0:
+            print(f"\n   父点云:")
+            for key, value in model_input['parent'].items():
+                if isinstance(value, torch.Tensor):
+                    print(f"      {key}: shape={value.shape}, dtype={value.dtype}")
+        
+        print(f"\n   全局参数:")
+        if 'grid_size' in model_input:
+            print(f"      grid_size: {model_input['grid_size'].item()}")
+        if 'category_id' in model_input:
+            print(f"      category_id: {model_input['category_id'].item()}")
+        
+        if 'norm_offset' in input_dict and 'norm_scale' in input_dict:
+            print(f"\n📐 归一化参数:")
+            print(f"   norm_offset: {input_dict['norm_offset']}")
+            print(f"   norm_scale: {input_dict['norm_scale']}")  
+
+        # output final prediction      
         with torch.no_grad():
             output_dict = self.model(model_input)
         
@@ -198,108 +251,145 @@ class PTv3ContactMatcher:
 
 
 def load_patch_data(patch_path: Path, verbose: bool = False) -> Dict[str, torch.Tensor]:
-    """
-    加载 .pth 格式的小点云数据
-    """
     try:
         data = torch.load(patch_path, map_location='cpu', weights_only=False)
     except Exception as e:
         raise RuntimeError(f"Failed to load {patch_path}: {e}")
     
-    # 键名映射
-    if 'local_coord' in data and 'coord' not in data:
-        data['coord'] = data['local_coord']
-        if verbose:
-            print(f"   ✅ 映射: local_coord → coord")
-    
-    if 'local_color' in data:
-        if 'feat' not in data:
-            data['feat'] = data['local_color']
-            if verbose:
-                print(f"   ✅ 映射: local_color → feat")
-        if 'color' not in data:
-            data['color'] = data['local_color']
-    
-    # 检查必要的键
-    missing_keys = []
-    if 'coord' not in data:
-        missing_keys.append('coord')
-    if 'gt_position' not in data:
-        missing_keys.append('gt_position')
-    
+    required_top_keys = ['local', 'parent', 'gt_position', 'norm_offset', 'norm_scale']
+    missing_keys = [k for k in required_top_keys if k not in data]
     if missing_keys:
         raise KeyError(
-            f"Missing required keys: {missing_keys}\n"
+            f"Missing required top-level keys: {missing_keys}\n"
             f"Available keys: {list(data.keys())}"
+        )   
+    
+    local_data = data['local']
+    required_local_keys = ['coord', 'feat']
+    missing_local_keys = [k for k in required_local_keys if k not in local_data]
+    if missing_local_keys:
+        raise KeyError(
+            f"Missing required keys in 'local': {missing_local_keys}\n"
+            f"Available keys in 'local': {list(local_data.keys())}"
         )
+
+    parent_data = data['parent']
+    required_parent_keys = ['coord', 'feat']
+    missing_parent_keys = [k for k in required_parent_keys if k not in parent_data]
+    if missing_parent_keys:
+        raise KeyError(
+            f"Missing required keys in 'parent': {missing_parent_keys}\n"
+            f"Available keys in 'parent': {list(parent_data.keys())}"
+        )    
     
-    # 处理 feat
-    if 'feat' not in data:
-        if 'color' in data:
-            data['feat'] = data['color']
-        elif 'local_color' in data:
-            data['feat'] = data['local_color']
-        else:
-            raise KeyError(f"Missing 'feat' or 'color' in {patch_path}")
-    
-    # 转换为 torch.Tensor
-    for key in ['coord', 'feat', 'grid_coord', 'gt_position']:
-        if key in data:
-            value = data[key]
+    local_dict = {}
+    for key in ['coord', 'feat', 'grid_coord', 'offset']:
+        if key in local_data:
+            value = local_data[key]
             if isinstance(value, np.ndarray):
-                data[key] = torch.from_numpy(value)
+                value = torch.from_numpy(value)
             elif not isinstance(value, torch.Tensor):
-                data[key] = torch.tensor(value)
+                value = torch.tensor(value)
+            
+            if key in ['coord', 'feat']:
+                value = value.float()
+            elif key == 'grid_coord':
+                value = value.long()
+            elif key == 'offset':
+                value = value.long()
+            
+            local_dict[key] = value
     
-    if 'category_id' in data:
-        value = data['category_id']
-        if isinstance(value, np.ndarray):
-            data['category_id'] = torch.from_numpy(value)
-        elif isinstance(value, (int, np.integer)):
-            data['category_id'] = torch.tensor(value)
-        elif not isinstance(value, torch.Tensor):
-            data['category_id'] = torch.tensor(value)
+    parent_dict = {}
+    for key in ['coord', 'feat', 'grid_coord', 'offset']:
+        if key in parent_data:
+            value = parent_data[key]
+            if isinstance(value, np.ndarray):
+                value = torch.from_numpy(value)
+            elif not isinstance(value, torch.Tensor):
+                value = torch.tensor(value)
+            
+            if key in ['coord', 'feat']:
+                value = value.float()
+            elif key == 'grid_coord':
+                value = value.long()
+            elif key == 'offset':
+                value = value.long()
+            
+            parent_dict[key] = value
     
-    return data
+    gt_position = data['gt_position']
+    if isinstance(gt_position, np.ndarray):
+        gt_position = torch.from_numpy(gt_position).float()
+    elif not isinstance(gt_position, torch.Tensor):
+        gt_position = torch.tensor(gt_position).float()
+    
+    norm_offset = data['norm_offset']
+    norm_scale = data['norm_scale']
+    
+    if isinstance(norm_offset, np.ndarray):
+        norm_offset = torch.from_numpy(norm_offset).float()
+    elif not isinstance(norm_offset, torch.Tensor):
+        norm_offset = torch.tensor(norm_offset).float()
+    
+    if isinstance(norm_scale, np.ndarray):
+        norm_scale = torch.from_numpy(norm_scale).float()
+    elif not isinstance(norm_scale, torch.Tensor):
+        norm_scale = torch.tensor(norm_scale).float()
+    
+    category_id = data.get('category_id')
+    if category_id is not None:
+        if isinstance(category_id, np.ndarray):
+            category_id = torch.from_numpy(category_id).long()
+        elif isinstance(category_id, (int, np.integer)):
+            category_id = torch.tensor(category_id, dtype=torch.long)
+        elif not isinstance(category_id, torch.Tensor):
+            category_id = torch.tensor(category_id).long()
+
+    print(f"\n✅ 数据加载成功:")
+    print(f"   局部点云: {local_dict['coord'].shape[0]} 点")
+    print(f"   父点云: {parent_dict['coord'].shape[0]} 点")
+    print(f"   GT 位置: {gt_position}")
+    print(f"   归一化参数: offset={norm_offset.tolist()}, scale={norm_scale.tolist()}")
+    if category_id is not None:
+        print(f"   类别 ID: {category_id.item()}")
+
+    return {
+        'local': local_dict,
+        'parent': parent_dict,
+        'gt_position': gt_position,
+        'norm_offset': norm_offset,
+        'norm_scale': norm_scale,
+        'category_id': category_id,
+        'name': data.get('name', patch_path.stem),
+    }
 
 
 def get_parent_model_from_data(patch_data: Dict) -> Optional[str]:
-    """从数据字典中直接读取父点云 ID"""
-    if 'bigpcd_id' in patch_data:
-        bigpcd_id = patch_data['bigpcd_id']
-        if isinstance(bigpcd_id, torch.Tensor):
-            bigpcd_id = bigpcd_id.item()
-        return f"{int(bigpcd_id):03d}"
-    
-    if 'bigpcd_name' in patch_data:
-        name = patch_data['bigpcd_name']
-        if isinstance(name, str):
+    if 'parent' in patch_data and 'name' in patch_data['parent']:
+        parent_name = patch_data['parent']['name']
+        if isinstance(parent_name, str):
             try:
-                return name.split('_')[-1].split('.')[0].zfill(3)
+                # 例如：bigpointcloud_001.ply → 001
+                return parent_name.split('_')[-1].split('.')[0].zfill(3)
             except:
                 pass
     
     return None
 
 
-def denormalize_position(position_normalized: np.ndarray, pcd_min, pcd_size) -> np.ndarray:
-    """
-    反归一化位置坐标
+def denormalize_position(position_normalized: np.ndarray, norm_offset, norm_scale) -> np.ndarray:
+    if isinstance(norm_offset, torch.Tensor):
+        norm_offset = norm_offset.cpu().numpy()
+    if isinstance(norm_scale, torch.Tensor):
+        norm_scale = norm_scale.cpu().numpy()
     
-    Args:
-        position_normalized: 归一化坐标 [0, 1]
-        pcd_min: 点云最小值
-        pcd_size: 点云尺寸
+    if isinstance(position_normalized, torch.Tensor):
+        position_normalized = position_normalized.cpu().numpy()
+    if not isinstance(position_normalized, np.ndarray):
+        position_normalized = np.array(position_normalized)
     
-    Returns:
-        position_real: 真实坐标（米）
-    """
-    if isinstance(pcd_min, torch.Tensor):
-        pcd_min = pcd_min.cpu().numpy()
-    if isinstance(pcd_size, torch.Tensor):
-        pcd_size = pcd_size.cpu().numpy()
-    
-    return position_normalized * pcd_size + pcd_min
+    return position_normalized * norm_scale + norm_offset
 
 
 def visualize_prediction(
@@ -311,11 +401,6 @@ def visualize_prediction(
     save_dir: Path = None,
     show_window: bool = False
 ):
-    """
-    在完整的父点云上可视化预测结果
-    
-    ⚠️  重要：pred_position 和 gt_position 必须是真实空间的坐标（米）
-    """
     geometries = []
     
     if not complete_model_path.exists():
@@ -333,19 +418,19 @@ def visualize_prediction(
     pcd_center = (pcd_min_complete + pcd_max_complete) / 2
     
     # 反归一化局部点云
-    coord_normalized = patch_data['coord']
+    if 'local' in patch_data and 'coord' in patch_data['local']:
+        coord_normalized = patch_data['local']['coord']
+    else:
+        raise KeyError("Missing coordinate data in patch_data['local']['coord']")
+
     if isinstance(coord_normalized, torch.Tensor):
         coord_normalized = coord_normalized.cpu().numpy()
     else:
         coord_normalized = np.array(coord_normalized)
-    
-    data_pcd_min = patch_data.get('pcd_min')
-    data_pcd_size = patch_data.get('pcd_size')
-    
-    if data_pcd_min is not None and data_pcd_size is not None:
-        coord_real = denormalize_position(coord_normalized, data_pcd_min, data_pcd_size)
-    else:
-        coord_real = coord_normalized
+
+    norm_offset = patch_data['norm_offset']
+    norm_scale = patch_data['norm_scale']
+    coord_real = denormalize_position(coord_normalized, norm_offset, norm_scale)
     
     patch_pcd = o3d.geometry.PointCloud()
     patch_pcd.points = o3d.utility.Vector3dVector(coord_real)
@@ -629,13 +714,13 @@ def test_all_patches(
             # 🔥 反归一化到真实空间
             pred_position = denormalize_position(
                 pred_position_normalized, 
-                patch_data['pcd_min'], 
-                patch_data['pcd_size']
+                patch_data['norm_offset'],
+                patch_data['norm_scale']
             )
             gt_position = denormalize_position(
                 gt_position_normalized,
-                patch_data['pcd_min'],
-                patch_data['pcd_size']
+                patch_data['norm_offset'],
+                patch_data['norm_scale']
             )
             
             # 计算误差（真实空间）
