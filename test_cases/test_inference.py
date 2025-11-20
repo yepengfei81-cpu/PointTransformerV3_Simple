@@ -250,80 +250,53 @@ class PTv3ContactMatcher:
         return pred_position
 
 
-def load_patch_data(patch_path: Path, verbose: bool = False) -> Dict[str, torch.Tensor]:
+def load_patch_data(
+    patch_path: Path, 
+    parent_pcd_root: Path,
+    grid_size: float = 0.002,
+    verbose: bool = False
+) -> Dict[str, torch.Tensor]:
+    """
+    加载原始 patch 数据，并转换为模型输入格式
+    
+    Args:
+        patch_path: patch 文件路径 (例如: patch_000120.pth)
+        parent_pcd_root: 父点云根目录 (例如: /home/ypf/touch_processed_data)
+        grid_size: 体素化网格大小 (默认: 0.002)
+        verbose: 是否打印详细信息
+    
+    Returns:
+        处理后的字典（与 DataLoader 输出格式一致）
+    """
     try:
         data = torch.load(patch_path, map_location='cpu', weights_only=False)
     except Exception as e:
         raise RuntimeError(f"Failed to load {patch_path}: {e}")
     
-    required_top_keys = ['local', 'parent', 'gt_position', 'norm_offset', 'norm_scale']
-    missing_keys = [k for k in required_top_keys if k not in data]
+    # ✅ 检查原始数据格式（扁平结构）
+    required_keys = ['local_coord', 'local_color', 'gt_position', 'norm_offset', 'norm_scale']
+    missing_keys = [k for k in required_keys if k not in data]
     if missing_keys:
         raise KeyError(
-            f"Missing required top-level keys: {missing_keys}\n"
+            f"Missing required keys: {missing_keys}\n"
             f"Available keys: {list(data.keys())}"
-        )   
-    
-    local_data = data['local']
-    required_local_keys = ['coord', 'feat']
-    missing_local_keys = [k for k in required_local_keys if k not in local_data]
-    if missing_local_keys:
-        raise KeyError(
-            f"Missing required keys in 'local': {missing_local_keys}\n"
-            f"Available keys in 'local': {list(local_data.keys())}"
         )
-
-    parent_data = data['parent']
-    required_parent_keys = ['coord', 'feat']
-    missing_parent_keys = [k for k in required_parent_keys if k not in parent_data]
-    if missing_parent_keys:
-        raise KeyError(
-            f"Missing required keys in 'parent': {missing_parent_keys}\n"
-            f"Available keys in 'parent': {list(parent_data.keys())}"
-        )    
     
-    local_dict = {}
-    for key in ['coord', 'feat', 'grid_coord', 'offset']:
-        if key in local_data:
-            value = local_data[key]
-            if isinstance(value, np.ndarray):
-                value = torch.from_numpy(value)
-            elif not isinstance(value, torch.Tensor):
-                value = torch.tensor(value)
-            
-            if key in ['coord', 'feat']:
-                value = value.float()
-            elif key == 'grid_coord':
-                value = value.long()
-            elif key == 'offset':
-                value = value.long()
-            
-            local_dict[key] = value
+    # ✅ 1. 提取局部点云数据
+    local_coord = data['local_coord']  # (N_local, 3)
+    local_color = data['local_color']  # (N_local, 3)
     
-    parent_dict = {}
-    for key in ['coord', 'feat', 'grid_coord', 'offset']:
-        if key in parent_data:
-            value = parent_data[key]
-            if isinstance(value, np.ndarray):
-                value = torch.from_numpy(value)
-            elif not isinstance(value, torch.Tensor):
-                value = torch.tensor(value)
-            
-            if key in ['coord', 'feat']:
-                value = value.float()
-            elif key == 'grid_coord':
-                value = value.long()
-            elif key == 'offset':
-                value = value.long()
-            
-            parent_dict[key] = value
+    if isinstance(local_coord, np.ndarray):
+        local_coord = torch.from_numpy(local_coord).float()
+    elif not isinstance(local_coord, torch.Tensor):
+        local_coord = torch.tensor(local_coord).float()
     
-    gt_position = data['gt_position']
-    if isinstance(gt_position, np.ndarray):
-        gt_position = torch.from_numpy(gt_position).float()
-    elif not isinstance(gt_position, torch.Tensor):
-        gt_position = torch.tensor(gt_position).float()
+    if isinstance(local_color, np.ndarray):
+        local_color = torch.from_numpy(local_color).float()
+    elif not isinstance(local_color, torch.Tensor):
+        local_color = torch.tensor(local_color).float()
     
+    # ✅ 2. 提取归一化参数
     norm_offset = data['norm_offset']
     norm_scale = data['norm_scale']
     
@@ -337,6 +310,73 @@ def load_patch_data(patch_path: Path, verbose: bool = False) -> Dict[str, torch.
     elif not isinstance(norm_scale, torch.Tensor):
         norm_scale = torch.tensor(norm_scale).float()
     
+    # ✅ 3. 加载父点云
+    bigpcd_id = data.get('bigpcd_id', data.get('parent_id'))
+    category = data.get('category', 'Unknown')
+    
+    if bigpcd_id is None:
+        raise KeyError("Missing 'bigpcd_id' or 'parent_id' in patch data")
+    
+    # 格式化 bigpcd_id（确保是 3 位字符串）
+    if isinstance(bigpcd_id, (int, np.integer)):
+        bigpcd_id_str = f"{bigpcd_id:03d}"
+    else:
+        bigpcd_id_str = str(bigpcd_id).zfill(3)
+    
+    # 构造父点云文件路径
+    bigpcd_name = data.get('bigpcd_name', f'bigpointcloud_{bigpcd_id_str}.ply')
+    
+    # 尝试不同的路径格式
+    possible_paths = [
+        parent_pcd_root / category / bigpcd_name,
+        parent_pcd_root / category / f'bigpointcloud_{bigpcd_id_str}.ply',
+        parent_pcd_root / category / f'data{bigpcd_id_str}.ply',
+        parent_pcd_root / bigpcd_name,
+    ]
+    
+    parent_pcd_path = None
+    for path in possible_paths:
+        if path.exists():
+            parent_pcd_path = path
+            break
+    
+    if parent_pcd_path is None:
+        raise FileNotFoundError(
+            f"Cannot find parent point cloud for bigpcd_id={bigpcd_id}\n"
+            f"Category: {category}\n"
+            f"Tried paths:\n" + "\n".join([f"  - {p}" for p in possible_paths])
+        )
+    
+    if verbose:
+        print(f"   📂 加载父点云: {parent_pcd_path}")
+    
+    # 读取父点云
+    import open3d as o3d
+    parent_pcd = o3d.io.read_point_cloud(str(parent_pcd_path))
+    parent_coord = np.asarray(parent_pcd.points).astype(np.float32)
+    parent_color = np.asarray(parent_pcd.colors).astype(np.float32)
+    
+    parent_coord = torch.from_numpy(parent_coord).float()
+    parent_color = torch.from_numpy(parent_color).float()
+    
+    # ✅ 4. 归一化坐标（使用数据集中保存的归一化参数）
+    # 注意：局部点云已经是归一化后的，所以不需要再次归一化
+    # 但父点云需要归一化
+    local_coord_normalized = local_coord  # 已经归一化
+    parent_coord_normalized = (parent_coord - norm_offset) / norm_scale
+    
+    # ✅ 5. 体素化（GridSample）
+    local_grid_coord = torch.floor(local_coord_normalized / grid_size).long()
+    parent_grid_coord = torch.floor(parent_coord_normalized / grid_size).long()
+    
+    # ✅ 6. 提取 GT 位置（已经是归一化的）
+    gt_position = data['gt_position']
+    if isinstance(gt_position, np.ndarray):
+        gt_position = torch.from_numpy(gt_position).float()
+    elif not isinstance(gt_position, torch.Tensor):
+        gt_position = torch.tensor(gt_position).float()
+    
+    # ✅ 7. 提取 category_id
     category_id = data.get('category_id')
     if category_id is not None:
         if isinstance(category_id, np.ndarray):
@@ -345,24 +385,47 @@ def load_patch_data(patch_path: Path, verbose: bool = False) -> Dict[str, torch.
             category_id = torch.tensor(category_id, dtype=torch.long)
         elif not isinstance(category_id, torch.Tensor):
             category_id = torch.tensor(category_id).long()
-
-    print(f"\n✅ 数据加载成功:")
-    print(f"   局部点云: {local_dict['coord'].shape[0]} 点")
-    print(f"   父点云: {parent_dict['coord'].shape[0]} 点")
-    print(f"   GT 位置: {gt_position}")
-    print(f"   归一化参数: offset={norm_offset.tolist()}, scale={norm_scale.tolist()}")
-    if category_id is not None:
-        print(f"   类别 ID: {category_id.item()}")
-
-    return {
-        'local': local_dict,
-        'parent': parent_dict,
-        'gt_position': gt_position,
-        'norm_offset': norm_offset,
-        'norm_scale': norm_scale,
-        'category_id': category_id,
+    
+    # ✅ 8. 构造嵌套结构（与 DataLoader 一致）
+    result = {
+        'local': {
+            'coord': local_coord_normalized,  # (N_local, 3) - 已归一化
+            'feat': local_color,               # (N_local, 3)
+            'grid_coord': local_grid_coord,    # (N_local, 3)
+            'offset': torch.tensor([local_coord_normalized.shape[0]], dtype=torch.long),
+        },
+        'parent': {
+            'coord': parent_coord_normalized,  # (N_parent, 3) - 归一化
+            'feat': parent_color,              # (N_parent, 3)
+            'grid_coord': parent_grid_coord,   # (N_parent, 3)
+            'offset': torch.tensor([parent_coord_normalized.shape[0]], dtype=torch.long),
+            'name': str(parent_pcd_path.name),
+        },
+        'gt_position': gt_position,            # (3,) - 已归一化
+        'norm_offset': norm_offset,            # (3,)
+        'norm_scale': norm_scale,              # (3,) or scalar
+        'category_id': category_id,            # scalar
         'name': data.get('name', patch_path.stem),
+        'grid_size': grid_size,
+        
+        # 🔥 额外保存原始数据（用于可视化）
+        '_raw_data': data,
+        '_parent_pcd_path': parent_pcd_path,
     }
+    
+    if verbose:
+        print(f"\n✅ 数据加载成功:")
+        print(f"   局部点云: {result['local']['coord'].shape[0]} 点")
+        print(f"   父点云: {result['parent']['coord'].shape[0]} 点")
+        print(f"   GT 位置（归一化）: {gt_position.tolist()}")
+        print(f"   归一化参数:")
+        print(f"      offset: {norm_offset.tolist()}")
+        print(f"      scale: {norm_scale.tolist()}")
+        if category_id is not None:
+            print(f"   类别 ID: {category_id.item()}")
+        print(f"   父点云文件: {parent_pcd_path}")
+    
+    return result
 
 
 def get_parent_model_from_data(patch_data: Dict) -> Optional[str]:
@@ -396,12 +459,20 @@ def visualize_prediction(
     patch_data: Dict,
     pred_position: np.ndarray,
     gt_position: np.ndarray,
-    complete_model_path: Path,
+    complete_model_path: Path = None,  # 🔥 改为可选
     patch_name: str = "",
     save_dir: Path = None,
     show_window: bool = False
 ):
+    """可视化预测结果"""
     geometries = []
+    
+    # 🔥 如果没有传入完整点云路径，从 patch_data 中提取
+    if complete_model_path is None:
+        if '_parent_pcd_path' in patch_data:
+            complete_model_path = patch_data['_parent_pcd_path']
+        else:
+            raise ValueError("需要提供 complete_model_path 或在 patch_data 中包含 '_parent_pcd_path'")
     
     if not complete_model_path.exists():
         raise FileNotFoundError(f"完整点云模型不存在: {complete_model_path}")
@@ -417,27 +488,28 @@ def visualize_prediction(
     pcd_size_complete = np.linalg.norm(pcd_max_complete - pcd_min_complete)
     pcd_center = (pcd_min_complete + pcd_max_complete) / 2
     
-    # 反归一化局部点云
-    if 'local' in patch_data and 'coord' in patch_data['local']:
+    # 🔥 反归一化局部点云（用于可视化）
+    if '_raw_data' in patch_data:
+        # 使用原始数据（未归一化）
+        coord_real = patch_data['_raw_data']['local_coord']
+        if isinstance(coord_real, torch.Tensor):
+            coord_real = coord_real.cpu().numpy()
+    else:
+        # 从归一化坐标反推
         coord_normalized = patch_data['local']['coord']
-    else:
-        raise KeyError("Missing coordinate data in patch_data['local']['coord']")
-
-    if isinstance(coord_normalized, torch.Tensor):
-        coord_normalized = coord_normalized.cpu().numpy()
-    else:
-        coord_normalized = np.array(coord_normalized)
-
-    norm_offset = patch_data['norm_offset']
-    norm_scale = patch_data['norm_scale']
-    coord_real = denormalize_position(coord_normalized, norm_offset, norm_scale)
+        if isinstance(coord_normalized, torch.Tensor):
+            coord_normalized = coord_normalized.cpu().numpy()
+        
+        norm_offset = patch_data['norm_offset']
+        norm_scale = patch_data['norm_scale']
+        coord_real = denormalize_position(coord_normalized, norm_offset, norm_scale)
     
     patch_pcd = o3d.geometry.PointCloud()
     patch_pcd.points = o3d.utility.Vector3dVector(coord_real)
     patch_pcd.paint_uniform_color([1.0, 0.65, 0.0])
     geometries.append(patch_pcd)
     
-    # 创建标记球体
+    # 创建标记球体（保持不变）
     sphere_radius = pcd_size_complete * 0.01
     
     gt_sphere = o3d.geometry.TriangleMesh.create_sphere(radius=sphere_radius)
@@ -584,6 +656,7 @@ def test_all_patches(
     category: str = "Scissors",
     save_dir: Path = Path("inference_results"),
     visualize_best_worst_median: bool = True,
+    grid_size: float = 0.002,  # 🔥 新增参数
 ):
     """测试数据集中的所有样本"""
     print(f"\n{'='*80}")
@@ -617,37 +690,6 @@ def test_all_patches(
     if complete_models:
         print(f"   模型 ID: {list(complete_models.keys())}")
     
-    # 构建映射表
-    print(f"\n🔍 正在构建 sample_id → bigpcd_id 映射表...")
-    
-    sample_to_bigpcd = {}
-    bigpcd_to_samples = {}
-    
-    for patch_file in patch_files:
-        sample_id = extract_sample_id_from_patch_name(patch_file.name)
-        
-        if sample_id is None:
-            continue
-        
-        try:
-            data = torch.load(patch_file, map_location='cpu', weights_only=False)
-            bigpcd_id = get_parent_model_from_data(data)
-            
-            if bigpcd_id:
-                sample_to_bigpcd[sample_id] = bigpcd_id
-                
-                if bigpcd_id not in bigpcd_to_samples:
-                    bigpcd_to_samples[bigpcd_id] = []
-                bigpcd_to_samples[bigpcd_id].append(sample_id)
-        except Exception as e:
-            print(f"   ⚠️  读取失败: {patch_file.name} - {e}")
-    
-    print(f"\n📋 实际映射关系:")
-    for bigpcd_id in sorted(bigpcd_to_samples.keys()):
-        sample_ids = sorted(bigpcd_to_samples[bigpcd_id])
-        print(f"   bigpointcloud_{bigpcd_id}.ply → {len(sample_ids)} 个小点云")
-        print(f"      sample_id 范围: {sample_ids[0]} ~ {sample_ids[-1]}")
-    
     # 创建保存目录
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -668,38 +710,20 @@ def test_all_patches(
     for i, patch_path in enumerate(patch_files):
         print(f"[{i+1}/{len(patch_files)}] 处理: {patch_path.name}")
         
-        # 🔥 初始化变量（防止未定义错误）
-        complete_model_path = None
-        bigpcd_id = None
         patch_name = patch_path.stem
+        complete_model_path = None
         
         try:
-            # 加载数据
-            patch_data = load_patch_data(patch_path, verbose=False)
+            # 🔥 加载数据（使用新的函数）
+            patch_data = load_patch_data(
+                patch_path, 
+                parent_pcd_root=dataset_dir,
+                grid_size=grid_size,
+                verbose=False
+            )
+            
             patch_name = patch_data.get('name', patch_path.stem)
-            
-            # 🔥 获取 bigpcd_id
-            bigpcd_id = get_parent_model_from_data(patch_data)
-            
-            if bigpcd_id is None:
-                sample_id = extract_sample_id_from_patch_name(patch_path.name)
-                if sample_id is not None:
-                    bigpcd_id = sample_to_bigpcd.get(sample_id)
-            
-            # 🔥 获取完整点云路径
-            if bigpcd_id:
-                complete_model_path = complete_models.get(bigpcd_id)
-            
-            if not complete_model_path:
-                if complete_models:
-                    complete_model_path = list(complete_models.values())[0]
-                    bigpcd_id = complete_model_path.stem.split('_')[-1]
-                    print(f"   ⚠️  使用默认: {complete_model_path.name}")
-                else:
-                    raise FileNotFoundError("找不到完整点云模型")
-            
-            if not complete_model_path.exists():
-                raise FileNotFoundError(f"完整点云文件不存在: {complete_model_path}")
+            complete_model_path = patch_data['_parent_pcd_path']
             
             # 预测（得到归一化坐标）
             pred_position_normalized = matcher.predict(patch_data, verbose=False)
@@ -733,7 +757,7 @@ def test_all_patches(
                 'patch_path': str(patch_path),
                 'complete_model_path': str(complete_model_path),
                 'complete_model_name': complete_model_path.name,
-                'parent_id': bigpcd_id,
+                'parent_id': patch_data['_raw_data'].get('parent_id', 'unknown'),
                 'pred_position_normalized': pred_position_normalized.tolist(),
                 'gt_position_normalized': gt_position_normalized.tolist(),
                 'pred_position': pred_position.tolist(),
@@ -750,9 +774,10 @@ def test_all_patches(
             print(f"   ❌ 失败: {e}")
             failed_samples.append({
                 'patch_name': patch_name,
+                'patch_path': str(patch_path),
                 'reason': str(e)
             })
-            continue  # 🔥 关键：跳过失败的样本
+            continue
     
     # 统计分析
     print(f"\n{'='*80}")
@@ -952,6 +977,8 @@ def main():
                         default='inference_results')
     parser.add_argument('--no_vis', action='store_true',
                         help='不生成可视化')
+    parser.add_argument('--grid_size', type=float, default=0.002,
+                        help='体素化网格大小（默认: 0.002）')
     
     args = parser.parse_args()
     
@@ -969,7 +996,8 @@ def main():
         dataset_dir=Path(args.dataset_dir),
         category=args.category,
         save_dir=Path(args.save_dir),
-        visualize_best_worst_median=not args.no_vis
+        visualize_best_worst_median=not args.no_vis,
+        grid_size=args.grid_size,  # 🔥 传入 grid_size
     )
 
 
