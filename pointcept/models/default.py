@@ -129,6 +129,17 @@ class ContactPositionRegressor(nn.Module):
             # nn.Sigmoid()
         )
 
+    @staticmethod
+    def _to_device(obj, device):
+        if isinstance(obj, torch.Tensor):
+            return obj.to(device, non_blocking=True)
+        elif isinstance(obj, dict):
+            return {k: ContactPositionRegressor._to_device(v, device) for k, v in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return type(obj)(ContactPositionRegressor._to_device(v, device) for v in obj)
+        else:
+            return obj
+        
     # Modular feature extraction
     def extract_features(self, point_dict, is_parent=False):
         if is_parent and self.use_parent_cloud:
@@ -193,7 +204,9 @@ class ContactPositionRegressor(nn.Module):
         
         return global_feat
             
-    def forward(self, input_dict, return_point=False):       
+    def forward(self, input_dict, return_point=False):      
+        device = next(self.parameters()).device
+        input_dict = self._to_device(input_dict, device)         
         local_dict = input_dict["local"]
         parent_dict = input_dict["parent"] if self.use_parent_cloud else None
         
