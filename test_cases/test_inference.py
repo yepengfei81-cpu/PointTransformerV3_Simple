@@ -459,7 +459,7 @@ def visualize_prediction(
     patch_data: Dict,
     pred_position: np.ndarray,
     gt_position: np.ndarray,
-    complete_model_path: Path = None,  # 🔥 改为可选
+    complete_model_path: Path = None,
     patch_name: str = "",
     save_dir: Path = None,
     show_window: bool = False
@@ -467,49 +467,73 @@ def visualize_prediction(
     """可视化预测结果"""
     geometries = []
     
-    # 🔥 如果没有传入完整点云路径，从 patch_data 中提取
+    # 🔥 1. 加载父点云（真实空间）
     if complete_model_path is None:
         if '_parent_pcd_path' in patch_data:
             complete_model_path = patch_data['_parent_pcd_path']
         else:
-            raise ValueError("需要提供 complete_model_path 或在 patch_data 中包含 '_parent_pcd_path'")
+            raise ValueError("缺少父点云路径")
     
     if not complete_model_path.exists():
-        raise FileNotFoundError(f"完整点云模型不存在: {complete_model_path}")
+        raise FileNotFoundError(f"父点云不存在: {complete_model_path}")
     
-    print(f"📂 加载完整父点云: {complete_model_path.name}")
+    print(f"📂 加载父点云: {complete_model_path.name}")
     complete_pcd = o3d.io.read_point_cloud(str(complete_model_path))
-    complete_pcd.paint_uniform_color([0.85, 0.85, 0.85])
-    geometries.append(complete_pcd)
-    
     complete_points = np.asarray(complete_pcd.points)
-    pcd_min_complete = complete_points.min(axis=0)
-    pcd_max_complete = complete_points.max(axis=0)
-    pcd_size_complete = np.linalg.norm(pcd_max_complete - pcd_min_complete)
-    pcd_center = (pcd_min_complete + pcd_max_complete) / 2
     
-    # 🔥 反归一化局部点云（用于可视化）
+    # 🔥 2. 反归一化局部点云（从归一化空间 → 真实空间）
     if '_raw_data' in patch_data:
-        # 使用原始数据（未归一化）
-        coord_real = patch_data['_raw_data']['local_coord']
-        if isinstance(coord_real, torch.Tensor):
-            coord_real = coord_real.cpu().numpy()
+        # ❌ _raw_data 中的坐标是归一化的
+        coord_normalized = patch_data['_raw_data']['local_coord']
+        if isinstance(coord_normalized, torch.Tensor):
+            coord_normalized = coord_normalized.cpu().numpy()
+        elif not isinstance(coord_normalized, np.ndarray):
+            coord_normalized = np.array(coord_normalized)
     else:
-        # 从归一化坐标反推
+        # 从 patch_data['local']['coord'] 获取
         coord_normalized = patch_data['local']['coord']
         if isinstance(coord_normalized, torch.Tensor):
             coord_normalized = coord_normalized.cpu().numpy()
-        
-        norm_offset = patch_data['norm_offset']
-        norm_scale = patch_data['norm_scale']
-        coord_real = denormalize_position(coord_normalized, norm_offset, norm_scale)
+    
+    # 🔥 反归一化
+    norm_offset = patch_data['norm_offset']
+    norm_scale = patch_data['norm_scale']
+    coord_real = denormalize_position(coord_normalized, norm_offset, norm_scale)
+    
+    # 🔥 调试信息
+    print(f"   父点云坐标范围:")
+    print(f"      X: [{complete_points[:, 0].min():.6f}, {complete_points[:, 0].max():.6f}]")
+    print(f"      Y: [{complete_points[:, 1].min():.6f}, {complete_points[:, 1].max():.6f}]")
+    print(f"      Z: [{complete_points[:, 2].min():.6f}, {complete_points[:, 2].max():.6f}]")
+    
+    print(f"   局部点云坐标范围（反归一化后）:")
+    print(f"      X: [{coord_real[:, 0].min():.6f}, {coord_real[:, 0].max():.6f}]")
+    print(f"      Y: [{coord_real[:, 1].min():.6f}, {coord_real[:, 1].max():.6f}]")
+    print(f"      Z: [{coord_real[:, 2].min():.6f}, {coord_real[:, 2].max():.6f}]")
+    
+    print(f"   GT 位置: [{gt_position[0]:.6f}, {gt_position[1]:.6f}, {gt_position[2]:.6f}]")
+    print(f"   预测位置: [{pred_position[0]:.6f}, {pred_position[1]:.6f}, {pred_position[2]:.6f}]")
+    
+    # 🔥 检查坐标空间是否一致
+    parent_range = complete_points.max(axis=0) - complete_points.min(axis=0)
+    local_range = coord_real.max(axis=0) - coord_real.min(axis=0)
+    
+    print(f"\n   坐标空间分析:")
+    print(f"      父点云尺度: {np.linalg.norm(parent_range):.6f} 米")
+    print(f"      局部点云尺度: {np.linalg.norm(local_range):.6f} 米")
+    print(f"      尺度比: {np.linalg.norm(parent_range) / (np.linalg.norm(local_range) + 1e-8):.2f}")
+    
+    # 🔥 创建几何体
+    complete_pcd.paint_uniform_color([0.85, 0.85, 0.85])
+    geometries.append(complete_pcd)
     
     patch_pcd = o3d.geometry.PointCloud()
     patch_pcd.points = o3d.utility.Vector3dVector(coord_real)
     patch_pcd.paint_uniform_color([1.0, 0.65, 0.0])
     geometries.append(patch_pcd)
     
-    # 创建标记球体（保持不变）
+    # 🔥 球体和连接线（保持不变）
+    pcd_size_complete = np.linalg.norm(parent_range)
     sphere_radius = pcd_size_complete * 0.01
     
     gt_sphere = o3d.geometry.TriangleMesh.create_sphere(radius=sphere_radius)
@@ -524,15 +548,14 @@ def visualize_prediction(
     pred_sphere.compute_vertex_normals()
     geometries.append(pred_sphere)
     
-    # 连接线
     line_set = o3d.geometry.LineSet()
     line_set.points = o3d.utility.Vector3dVector(np.array([pred_position, gt_position]))
     line_set.lines = o3d.utility.Vector2iVector([[0, 1]])
     line_set.colors = o3d.utility.Vector3dVector([[1, 1, 0]])
     geometries.append(line_set)
     
-    # 坐标系
-    coord_size = pcd_size_complete * 0.05
+    pcd_center = (complete_points.min(axis=0) + complete_points.max(axis=0)) / 2
+    coord_size = pcd_size_complete * 0.1
     coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(
         size=coord_size, 
         origin=pcd_center

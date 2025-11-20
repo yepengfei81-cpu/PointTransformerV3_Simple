@@ -1,12 +1,12 @@
 _base_ = ["../_base_/default_runtime.py"]
 
-batch_size = 8
-batch_size_val = 2
-num_worker = 8
+batch_size = 16
+batch_size_val = 8
+num_worker = 16
 world_size = 1
 batch_size_per_gpu = 4
 batch_size_val_per_gpu = 4
-num_worker_per_gpu = 24
+num_worker_per_gpu = 16
 mix_prob = 0.0
 empty_cache = False
 enable_amp = False
@@ -119,7 +119,7 @@ data = dict(
         parent_transform=[
             dict(
                 type="GridSample",
-                grid_size=0.002,  # 与局部点云一致
+                grid_size=0.004,  # 与局部点云一致
                 hash_type="fnv",
                 mode="train",
                 return_grid_coord=True,
@@ -162,7 +162,7 @@ data = dict(
         parent_transform=[
             dict(
                 type="GridSample",
-                grid_size=0.002,
+                grid_size=0.004,
                 hash_type="fnv",
                 mode="train",
                 return_grid_coord=True,
@@ -190,7 +190,7 @@ data = dict(
         parent_transform=[
             dict(
                 type="GridSample",
-                grid_size=0.002,
+                grid_size=0.004,
                 hash_type="fnv",
                 mode="train",
                 return_grid_coord=True,
