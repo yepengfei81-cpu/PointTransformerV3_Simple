@@ -184,7 +184,12 @@ class CenterShift(object):
     
 @TRANSFORMS.register_module()
 class CentroidShift(object):
-    def __init__(self, keys=("coord",), gt_key="gt_position", store_centroid=True):
+    def __init__(
+        self, 
+        keys=("coord",), 
+        gt_key="gt_position", 
+        store_centroid=True,
+    ):
         if isinstance(keys, str):
             self.keys = [keys]
         else:
@@ -199,25 +204,10 @@ class CentroidShift(object):
             if key in data_dict:
                 coord = data_dict[key]  # (N, 3)
                 centroid = coord.mean(axis=0)  # (3,)
-                
                 data_dict[key] = coord - centroid
-                
                 if self.store_centroid:
                     centroid_key = f"{key}_centroid"
                     data_dict[centroid_key] = centroid
-        
-        if centroid is not None and self.gt_key in data_dict:
-            gt_position = data_dict[self.gt_key]  # (3,)
-            gt_relative_offset = gt_position - centroid
-
-            gt_relative_key = f"{self.gt_key}_relative"
-            gt_absolute_key = f"{self.gt_key}_absolute"
-            
-            data_dict[gt_relative_key] = gt_relative_offset
-            
-            if gt_absolute_key not in data_dict:
-                data_dict[gt_absolute_key] = gt_position.copy()
-        
         return data_dict
     
     def __repr__(self):
@@ -225,7 +215,8 @@ class CentroidShift(object):
             f"{self.__class__.__name__}("
             f"keys={self.keys}, "
             f"gt_key='{self.gt_key}', "
-            f"store_centroid={self.store_centroid})"
+            f"store_centroid={self.store_centroid}, "
+            f"keep_gt_absolute={self.keep_gt_absolute})"
         )
 
 
