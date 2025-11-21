@@ -185,7 +185,6 @@ class CenterShift(object):
 @TRANSFORMS.register_module()
 class CentroidShift(object):
     def __init__(self, keys=("coord",), gt_key="gt_position", store_centroid=True):
-        # 确保 keys 是列表或元组
         if isinstance(keys, str):
             self.keys = [keys]
         else:

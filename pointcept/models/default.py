@@ -53,12 +53,13 @@ class ContactPositionRegressor(nn.Module):
         parent_backbone=None,
         fusion_type="concat",  # "concat" | "cross_attention"
         use_parent_cloud=True,
+        predict_relative=True,
     ):
         super().__init__()
-        
+
+        self.predict_relative = predict_relative
         self.backbone = build_model(backbone)
         self.freeze_backbone = freeze_backbone
-        # self.criteria = build_criteria(criteria)
         self.criterion_smooth_l1 = nn.SmoothL1Loss()
         self.criterion_mse = nn.MSELoss()
         self.use_category_condition = use_category_condition
@@ -221,18 +222,11 @@ class ContactPositionRegressor(nn.Module):
             elif self.fusion_type == "cross_attention":
                 local_feat_unsqueeze = local_feat.unsqueeze(1)
                 parent_feat_unsqueeze = parent_feat.unsqueeze(1)
-                # print(f"\nBefore cross attention:")
-                # print(f"   local_feat_unsqueeze: {local_feat_unsqueeze.shape}")
-                # print(f"   parent_feat_unsqueeze: {parent_feat_unsqueeze.shape}")
                 fused_feat, attn_weights = self.cross_attention(
                     query=local_feat_unsqueeze,
                     key=parent_feat_unsqueeze,
                     value=parent_feat_unsqueeze,
                 )
-                # print(f"\nAfter cross attention:")
-                # print(f"   fused_feat: shape={fused_feat.shape}, mean={fused_feat.mean().item():.6f}, std={fused_feat.std().item():.6f}")
-                # print(f"   attn_weights: shape={attn_weights.shape}")
-                # print(f"   attn_weights values: {attn_weights.squeeze().detach().cpu().tolist()}")                
                 global_feat = fused_feat.squeeze(1)  # (batch_size, C)
             else:
                 raise ValueError(f"Unknown fusion_type: {self.fusion_type}")
@@ -255,17 +249,42 @@ class ContactPositionRegressor(nn.Module):
             return_dict["parent_feat"] = parent_feat
             return_dict["global_feat"] = global_feat
 
-        if self.training or "gt_position" in input_dict:
-            gt_position_norm = input_dict["gt_position"]  # (batch_size, 3)
-            loss_smooth_l1 = self.criterion_smooth_l1(position_pred_norm, gt_position_norm)
-            loss_mse = self.criterion_mse(position_pred_norm, gt_position_norm)
-            total_loss = loss_smooth_l1 * 1.0 + loss_mse * 0.5
-            
+        if self.training:
+            if self.predict_relative:
+                gt_position = input_dict["gt_position_relative"]  # (batch_size, 3)
+            else:
+                gt_position = input_dict["gt_position_absolute"]  # (batch_size, 3)
+            loss_smooth_l1 = self.criterion_smooth_l1(position_pred_norm, gt_position)
+            loss_mse = self.criterion_mse(position_pred_norm, gt_position)
+            total_loss = loss_smooth_l1 * 1.0 + loss_mse * 0.5 
             return_dict["loss"] = total_loss
-            if not self.training:
-                return_dict["pred_position"] = position_pred_norm
+            return_dict["pred_position_relative"] = position_pred_norm 
         else:
-            return_dict["pred_position"] = position_pred_norm
+            if self.predict_relative:
+                coord_centroid = input_dict.get("coord_centroid")
+                if coord_centroid is None:
+                    raise KeyError("Inference requires 'coord_centroid' to recover absolute position")
+                
+                position_pred_absolute = position_pred_norm + coord_centroid  # (batch_size, 3)
+                return_dict["pred_position_relative"] = position_pred_norm      
+                return_dict["pred_position_absolute"] = position_pred_absolute  
+            else:
+                # 兼容旧逻辑：直接预测绝对位置
+                return_dict["pred_position_absolute"] = position_pred_norm
+            
+            if "gt_position_absolute" in input_dict:
+                return_dict["gt_position_absolute"] = input_dict["gt_position_absolute"]            
+        # if self.training or "gt_position" in input_dict:
+        #     gt_position_norm = input_dict["gt_position"]  # (batch_size, 3)
+        #     loss_smooth_l1 = self.criterion_smooth_l1(position_pred_norm, gt_position_norm)
+        #     loss_mse = self.criterion_mse(position_pred_norm, gt_position_norm)
+        #     total_loss = loss_smooth_l1 * 1.0 + loss_mse * 0.5
+            
+        #     return_dict["loss"] = total_loss
+        #     if not self.training:
+        #         return_dict["pred_position"] = position_pred_norm
+        # else:
+        #     return_dict["pred_position"] = position_pred_norm
         
         return return_dict
 
