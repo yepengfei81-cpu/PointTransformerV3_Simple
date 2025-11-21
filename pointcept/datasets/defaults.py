@@ -692,9 +692,12 @@ class ContactPositionDataset(Dataset):
         if self.parent_transform is not None:
             parent_dict = self.parent_transform(parent_dict)
 
-        gt_position = data_dict.pop("gt_position", None)
+        gt_position_absolute = data_dict.pop("gt_position_absolute", None)
+        gt_position_relative = data_dict.pop("gt_position_relative", None)
+        coord_centroid = data_dict.pop("coord_centroid", None)
         name = data_dict.pop("name", None)
         category_id = data_dict.pop("category_id", None)
+        parent_id = data_dict.pop("parent_id", None)
 
         result = {
             "local": data_dict,
@@ -702,12 +705,19 @@ class ContactPositionDataset(Dataset):
             "norm_offset": norm_offset,
             "norm_scale": norm_scale,
         }
-        if gt_position is not None:
-            result["gt_position"] = gt_position
+
+        if gt_position_absolute is not None:
+            result["gt_position_absolute"] = gt_position_absolute
+        if gt_position_relative is not None:
+            result["gt_position_relative"] = gt_position_relative
+        if coord_centroid is not None:
+            result["coord_centroid"] = coord_centroid
         if name is not None:
             result["name"] = name        
         if category_id is not None:
-            result["category_id"] = category_id 
+            result["category_id"] = category_id
+        if parent_id is not None:
+            result["parent_id"] = parent_id
                    
         return result
     
@@ -721,7 +731,7 @@ class ContactPositionDataset(Dataset):
             parent_dict = self.parent_transform(parent_dict)
         
         result_dict = dict(
-            gt_position=data_dict.pop("gt_position"),
+            coord_centroid=data_dict.pop("coord_centroid", None),
             name=data_dict.pop("name"),
             norm_offset=norm_offset,
             norm_scale=norm_scale,
@@ -729,7 +739,9 @@ class ContactPositionDataset(Dataset):
         
         if "category_id" in data_dict:
             result_dict["category_id"] = data_dict.pop("category_id")
-        
+        if "parent_id" in data_dict:
+            result_dict["parent_id"] = data_dict.pop("parent_id")
+                    
         if len(self.aug_transform) == 0:
             data_dict["index"] = np.arange(data_dict["coord"].shape[0])
             data_dict = self.post_transform(data_dict)
