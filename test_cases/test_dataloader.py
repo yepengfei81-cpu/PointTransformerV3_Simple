@@ -21,10 +21,10 @@ def print_separator(title="", width=80):
         print("=" * width)
 
 
-def analyze_batch(batch, batch_idx):
+def analyze_batch(batch, batch_idx, is_test=False):
     """详细分析一个 batch 的内容（嵌套结构）"""
     print(f"\n{'─' * 80}")
-    print(f"📦 Batch {batch_idx} Analysis")
+    print(f"📦 Batch {batch_idx} Analysis {'(Test Mode)' if is_test else '(Train/Val Mode)'}")
     print(f"{'─' * 80}")
     
     print(f"\n1️⃣  基本信息:")
@@ -37,15 +37,18 @@ def analyze_batch(batch, batch_idx):
         local = batch["local"]
         print(f"   - Keys: {list(local.keys())}")
         
-        for key in ["coord", "grid_coord", "feat", "offset", "gt_position", "name"]:
+        # 🔥 更新：添加新字段
+        for key in ["coord", "grid_coord", "feat", "offset", 
+                    "gt_position_absolute", "gt_position_relative", "coord_centroid",  # 🔥 新增
+                    "name", "category_id", "parent_id"]:  # 🔥 新增
             if key in local:
                 value = local[key]
                 if isinstance(value, torch.Tensor):
-                    print(f"   ✅ {key:15s}: shape={str(value.shape):20s} dtype={value.dtype}")
+                    print(f"   ✅ {key:25s}: shape={str(value.shape):20s} dtype={value.dtype}")
                 elif isinstance(value, list):
-                    print(f"   ✅ {key:15s}: list of {len(value)} items")
+                    print(f"   ✅ {key:25s}: list of {len(value)} items")
                 else:
-                    print(f"   ✅ {key:15s}: {type(value).__name__}")
+                    print(f"   ✅ {key:25s}: {type(value).__name__}")
         
         if "offset" in local:
             offset = local["offset"]
@@ -155,13 +158,62 @@ def analyze_batch(batch, batch_idx):
             else:
                 print(f"   - norm_scale: list of {len(norm_scale)} items")
     
-    # 分析 GT
-    if "local" in batch and "gt_position" in batch["local"]:
-        gt_position = batch["local"]["gt_position"]
+    # 🔥 新增：分析 GT（训练/验证集）
+    if not is_test and "local" in batch:
         print(f"\n6️⃣  Ground Truth:")
-        print(f"   - gt_position shape: {gt_position.shape}")
-        for j in range(min(gt_position.shape[0], 3)):
-            print(f"      Sample {j}: [{gt_position[j, 0]:.6f}, {gt_position[j, 1]:.6f}, {gt_position[j, 2]:.6f}]")
+        
+        # GT Absolute
+        if "gt_position_absolute" in batch["local"]:
+            gt_abs = batch["local"]["gt_position_absolute"]
+            print(f"   - gt_position_absolute shape: {gt_abs.shape}")
+            for j in range(min(gt_abs.shape[0], 3)):
+                print(f"      Sample {j}: [{gt_abs[j, 0]:.6f}, {gt_abs[j, 1]:.6f}, {gt_abs[j, 2]:.6f}]")
+        
+        # GT Relative
+        if "gt_position_relative" in batch["local"]:
+            gt_rel = batch["local"]["gt_position_relative"]
+            print(f"   - gt_position_relative shape: {gt_rel.shape}")
+            for j in range(min(gt_rel.shape[0], 3)):
+                print(f"      Sample {j}: [{gt_rel[j, 0]:.6f}, {gt_rel[j, 1]:.6f}, {gt_rel[j, 2]:.6f}]")
+        
+        # Coord Centroid
+        if "coord_centroid" in batch["local"]:
+            centroid = batch["local"]["coord_centroid"]
+            print(f"   - coord_centroid shape: {centroid.shape}")
+            for j in range(min(centroid.shape[0], 3)):
+                print(f"      Sample {j}: [{centroid[j, 0]:.6f}, {centroid[j, 1]:.6f}, {centroid[j, 2]:.6f}]")
+        
+        # 🔥 验证：gt_relative + centroid = gt_absolute
+        if all(k in batch["local"] for k in ["gt_position_absolute", "gt_position_relative", "coord_centroid"]):
+            print(f"\n   验证恢复绝对位置:")
+            gt_abs = batch["local"]["gt_position_absolute"]
+            gt_rel = batch["local"]["gt_position_relative"]
+            centroid = batch["local"]["coord_centroid"]
+            
+            recovered = gt_rel + centroid
+            error = torch.norm(gt_abs - recovered, dim=1)
+            
+            for j in range(min(error.shape[0], 3)):
+                status = "✅" if error[j] < 1e-5 else "❌"
+                print(f"      Sample {j}: error = {error[j].item():.2e} {status}")
+            
+            max_error = error.max().item()
+            if max_error < 1e-5:
+                print(f"   ✅ 所有样本恢复误差 < 1e-5")
+            else:
+                print(f"   ⚠️  最大恢复误差: {max_error:.2e}")
+    
+    # 🔥 测试集：只有 coord_centroid
+    if is_test and "local" in batch:
+        print(f"\n6️⃣  推理信息 (无 GT):")
+        
+        if "coord_centroid" in batch["local"]:
+            centroid = batch["local"]["coord_centroid"]
+            print(f"   - coord_centroid shape: {centroid.shape}")
+            for j in range(min(centroid.shape[0], 3)):
+                print(f"      Sample {j}: [{centroid[j, 0]:.6f}, {centroid[j, 1]:.6f}, {centroid[j, 2]:.6f}]")
+        else:
+            print(f"   ⚠️  测试集缺少 coord_centroid（无法恢复绝对位置）")
     
     # 分析样本名称
     if "local" in batch and "name" in batch["local"]:
@@ -182,6 +234,7 @@ def test_single_sample():
     """测试单个样本的数据结构"""
     print_separator("🔬 测试单个样本")
     
+    # 🔥 修改配置文件路径
     cfg = Config.fromfile("/home/ypf/PointTransformerV3_Simple/configs/s3dis/semseg-pt-v3m1-gelsight.py")
     
     print(f"\n📂 加载训练集...")
@@ -201,9 +254,9 @@ def test_single_sample():
         print(f"   - Keys: {list(local.keys())}")
         for key, value in local.items():
             if isinstance(value, torch.Tensor):
-                print(f"      ✅ {key:15s}: shape={str(value.shape):20s} dtype={value.dtype}")
+                print(f"      ✅ {key:25s}: shape={str(value.shape):20s} dtype={value.dtype}")
             else:
-                print(f"      ✅ {key:15s}: {type(value).__name__}")
+                print(f"      ✅ {key:25s}: {type(value).__name__}")
     
     # 分析父点云
     if "parent" in sample:
@@ -215,6 +268,21 @@ def test_single_sample():
                 print(f"      ✅ {key:15s}: shape={str(value.shape):20s} dtype={value.dtype}")
             else:
                 print(f"      ✅ {key:15s}: {type(value).__name__}")
+    
+    # 🔥 新增：验证 GT
+    if "gt_position_absolute" in sample and "gt_position_relative" in sample and "coord_centroid" in sample:
+        print(f"\n   验证 GT 字段:")
+        gt_abs = sample["gt_position_absolute"]
+        gt_rel = sample["gt_position_relative"]
+        centroid = sample["coord_centroid"]
+        
+        print(f"   - gt_position_absolute: {gt_abs.numpy()}")
+        print(f"   - gt_position_relative: {gt_rel.numpy()}")
+        print(f"   - coord_centroid: {centroid.numpy()}")
+        
+        recovered = gt_rel + centroid
+        error = torch.norm(gt_abs - recovered).item()
+        print(f"   - 恢复误差: {error:.2e} {'✅' if error < 1e-5 else '❌'}")
     
     # 分析归一化参数
     if "norm_offset" in sample:
@@ -261,7 +329,7 @@ def test_collate_fn():
     if "parent" in batch:
         print(f"   Batch parent keys: {list(batch['parent'].keys())}")
     
-    analyze_batch(batch, 0)
+    analyze_batch(batch, 0, is_test=False)
     
     print_separator("✅ point_collate_fn 测试完成")
 
@@ -300,7 +368,7 @@ def test_train_dataloader():
     for i, batch in enumerate(train_loader):
         if i >= 2:
             break
-        analyze_batch(batch, i)
+        analyze_batch(batch, i, is_test=False)
     
     print_separator("✅ 训练集 DataLoader 测试完成")
 
@@ -339,7 +407,7 @@ def test_val_dataloader():
     for i, batch in enumerate(val_loader):
         if i >= 1:
             break
-        analyze_batch(batch, i)
+        analyze_batch(batch, i, is_test=False)
     
     print_separator("✅ 验证集 DataLoader 测试完成")
 
@@ -347,7 +415,7 @@ def test_val_dataloader():
 def main():
     """运行所有测试"""
     print("\n" + "🚀" * 40)
-    print("开始测试带父点云的 DataLoader".center(80))
+    print("开始测试带 CentroidShift 的 DataLoader".center(80))
     print("🚀" * 40)
     
     try:
