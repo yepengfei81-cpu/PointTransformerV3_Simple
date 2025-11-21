@@ -61,6 +61,7 @@ model = dict(
     use_parent_cloud=False,
     parent_backbone=None, # shared backbone
     fusion_type="cross_attention",  # "concat" | "cross_attention"  
+    predict_relative=True,
 )
 
 epoch = 500
@@ -89,7 +90,13 @@ data = dict(
         parent_pcd_root=data_root,
         loop=epoch // eval_epoch,
         transform=[
-            dict(type="CenterShift", apply_z=True),
+            # dict(type="CenterShift", apply_z=True),
+            dict(
+                type="CentroidShift",
+                keys=("coord",),
+                gt_key="gt_position",
+                store_centroid=True,
+            ),            
             dict(type="RandomRotate", angle=[-1, 1], axis="z", center=[0, 0, 0], p=0.5),
             dict(type="RandomRotate", angle=[-1 / 64, 1 / 64], axis="x", p=0.5),
             dict(type="RandomRotate", angle=[-1 / 64, 1 / 64], axis="y", p=0.5),
@@ -106,12 +113,20 @@ data = dict(
                 mode="train",
                 return_grid_coord=True,
             ),
-            dict(type="CenterShift", apply_z=False),
+            # dict(type="CenterShift", apply_z=False),
+            dict(
+                type="CentroidShift",
+                keys=("coord",),
+                gt_key="gt_position_relative",
+                store_centroid=False,
+            ),            
             dict(type="NormalizeColor"),
             dict(type="ToTensor"),
             dict(
                 type="Collect",
-                keys=("coord", "grid_coord", "gt_position", "category_id", "name", "parent_id"),
+                keys=("coord", "grid_coord", 
+                      "gt_position_absolute", "gt_position_relative", "coord_centroid",
+                      "category_id", "name", "parent_id"),
                 feat_keys=("color",),
                 # offset_keys_dict={},
             ),
@@ -141,7 +156,13 @@ data = dict(
         data_root=data_root,
         parent_pcd_root=data_root,
         transform=[
-            dict(type="CenterShift", apply_z=True),
+            # dict(type="CenterShift", apply_z=True),
+           dict(
+                type="CentroidShift",
+                keys=("coord",),
+                gt_key="gt_position",
+                store_centroid=True,
+            ),            
             dict(
                 type="GridSample",
                 grid_size=0.002,
@@ -149,12 +170,20 @@ data = dict(
                 mode="train",
                 return_grid_coord=True,
             ),
-            dict(type="CenterShift", apply_z=False),
+            # dict(type="CenterShift", apply_z=False),
+            dict(
+                type="CentroidShift",
+                keys=("coord",),
+                gt_key="gt_position_relative",
+                store_centroid=False,
+            ),            
             dict(type="NormalizeColor"),
             dict(type="ToTensor"),
             dict(
                 type="Collect",
-                keys=("coord", "grid_coord", "gt_position", "category_id", "name", "parent_id"),
+                keys=("coord", "grid_coord", 
+                      "gt_position_absolute", "gt_position_relative", "coord_centroid", 
+                      "category_id", "name", "parent_id"),
                 feat_keys=("color",),
                 # offset_keys_dict={},
             ),
@@ -184,7 +213,13 @@ data = dict(
         data_root=data_root,
         parent_pcd_root=data_root,
         transform=[
-            dict(type="CenterShift", apply_z=True),
+            # dict(type="CenterShift", apply_z=True),
+           dict(
+                type="CentroidShift",
+                keys=("coord",),
+                gt_key="gt_position",
+                store_centroid=True,
+            ),            
             dict(type="NormalizeColor"),
         ],
         parent_transform=[
@@ -215,11 +250,19 @@ data = dict(
             ),
             crop=None,
             post_transform=[
-                dict(type="CenterShift", apply_z=False),
+                # dict(type="CenterShift", apply_z=False),
+                dict(
+                    type="CentroidShift",
+                    keys=("coord",),
+                    gt_key="gt_position_relative",
+                    store_centroid=False,
+                ),                
                 dict(type="ToTensor"),
                 dict(
                     type="Collect",
-                    keys=("coord", "grid_coord", "name", "parent_id"),
+                    keys=("coord", "grid_coord", 
+                          "coord_centroid",
+                          "name", "parent_id"),
                     feat_keys=("color",),
                     # offset_keys_dict={},
                 ),
