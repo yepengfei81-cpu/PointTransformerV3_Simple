@@ -53,11 +53,8 @@ class ContactPositionRegressor(nn.Module):
         parent_backbone=None,
         fusion_type="concat",  # "concat" | "cross_attention"
         use_parent_cloud=True,
-        predict_relative=True,
     ):
         super().__init__()
-
-        self.predict_relative = predict_relative
         self.backbone = build_model(backbone)
         self.freeze_backbone = freeze_backbone
         self.criterion_smooth_l1 = nn.SmoothL1Loss()
@@ -88,9 +85,9 @@ class ContactPositionRegressor(nn.Module):
 
         if use_category_condition:
             self.category_embedding = nn.Embedding(num_classes, category_emb_dim)
-            regression_input_dim = fusion_dim + category_emb_dim
+            regression_input_dim = fusion_dim + category_emb_dim + 3  # 🔥 +3 for coord_centroid
         else:
-            regression_input_dim = fusion_dim
+            regression_input_dim = fusion_dim + 3
         
         # Pooling
         self.pooling_type = pooling_type
@@ -232,14 +229,17 @@ class ContactPositionRegressor(nn.Module):
                 raise ValueError(f"Unknown fusion_type: {self.fusion_type}")
         else:
             global_feat = local_feat
-        
+
+        coord_centroid = input_dict.get("coord_centroid")  # (batch_size, 3)
+        if coord_centroid is None:
+            raise KeyError("'coord_centroid' is required to predict absolute position")
+
         if self.use_category_condition and "category_id" in input_dict:
-            category_id = input_dict["category_id"]  # (batch_size,)
-            if category_id.dtype != torch.long:
-                category_id = category_id.long()
-            
-            category_emb = self.category_embedding(category_id)  # (batch_size, category_emb_dim)
-            global_feat = torch.cat([global_feat, category_emb], dim=-1)  # (batch_size, C + emb_dim)
+            category_id = input_dict["category_id"]
+            category_emb = self.category_embedding(category_id)
+            global_feat = torch.cat([global_feat, category_emb, coord_centroid], dim=-1)
+        else:
+            global_feat = torch.cat([global_feat, coord_centroid], dim=-1)
         
         position_pred_norm = self.regression_head(global_feat)  # (batch_size, 3)
         return_dict = {}
@@ -249,31 +249,17 @@ class ContactPositionRegressor(nn.Module):
             return_dict["parent_feat"] = parent_feat
             return_dict["global_feat"] = global_feat
 
-        if self.training:
-            if self.predict_relative:
-                gt_position = input_dict["gt_position_relative"]  # (batch_size, 3)
-            else:
-                gt_position = input_dict["gt_position_absolute"]  # (batch_size, 3)
-            loss_smooth_l1 = self.criterion_smooth_l1(position_pred_norm, gt_position)
-            loss_mse = self.criterion_mse(position_pred_norm, gt_position)
-            total_loss = loss_smooth_l1 * 1.0 + loss_mse * 0.5 
-            return_dict["loss"] = total_loss
-            return_dict["pred_position_relative"] = position_pred_norm 
-        else:
-            if self.predict_relative:
-                coord_centroid = input_dict.get("coord_centroid")
-                if coord_centroid is None:
-                    raise KeyError("Inference requires 'coord_centroid' to recover absolute position")
-                
-                position_pred_absolute = position_pred_norm + coord_centroid  # (batch_size, 3)
-                return_dict["pred_position_relative"] = position_pred_norm      
-                return_dict["pred_position_absolute"] = position_pred_absolute  
-            else:
-                # 兼容旧逻辑：直接预测绝对位置
-                return_dict["pred_position_absolute"] = position_pred_norm
+        if self.training or "gt_position" in input_dict:
+            gt_position_absolute = input_dict["gt_position"]
             
-            if "gt_position_absolute" in input_dict:
-                return_dict["gt_position_absolute"] = input_dict["gt_position_absolute"]            
+            loss_smooth_l1 = self.criterion_smooth_l1(position_pred_norm, gt_position_absolute)
+            loss_mse = self.criterion_mse(position_pred_norm, gt_position_absolute)
+            total_loss = loss_smooth_l1 * 1.0 + loss_mse * 0.5
+            
+            return_dict["loss"] = total_loss
+            return_dict["pred_position"] = position_pred_norm
+        else:
+            return_dict["pred_position"] = position_pred_norm
         # if self.training or "gt_position" in input_dict:
         #     gt_position_norm = input_dict["gt_position"]  # (batch_size, 3)
         #     loss_smooth_l1 = self.criterion_smooth_l1(position_pred_norm, gt_position_norm)

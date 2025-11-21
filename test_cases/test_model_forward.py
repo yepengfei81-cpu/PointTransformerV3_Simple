@@ -108,7 +108,7 @@ def test_model_forward():
         return
     
     print(f"\n   📋 Checking nested structure...")
-    top_level_required = ['local', 'parent', 'gt_position']
+    top_level_required = ['local', 'parent', 'gt_position', 'coord_centroid']
     missing_required = []
 
     for key in top_level_required:
@@ -138,7 +138,7 @@ def test_model_forward():
                 print(f"      {key}: {batch['parent'][key].shape}")
 
     print(f"\n   📋 Normalization:")
-    for key in ['norm_offset', 'norm_scale', 'category_id']:
+    for key in ['norm_offset', 'norm_scale', 'coord_centroid', 'category_id']:
         if key in batch and isinstance(batch[key], torch.Tensor):
             print(f"      {key}: {batch[key].shape}")
 
@@ -158,12 +158,29 @@ def test_model_forward():
     #         batch[key] = batch[key].to(device)
     
     print(f"\n   ✅ Batch moved to device: {device}")
-    
+    # 🔥 验证局部坐标是否去中心化
+    print(f"\n🔍 Validating local coordinate centering...")
+    if "local" in batch and "coord" in batch["local"]:
+        local_coord = batch["local"]["coord"].cpu()
+        local_offset = batch["local"]["offset"].cpu()
+        
+        print(f"   Checking each sample:")
+        start = 0
+        for i in range(len(local_offset)):
+            end = local_offset[i].item()
+            sample_coord = local_coord[start:end]
+            coord_mean = sample_coord.mean(dim=0)
+            coord_norm = torch.norm(coord_mean).item()
+            
+            status = "✅" if coord_norm < 1e-3 else "⚠️"
+            print(f"      Sample {i}: mean=[{coord_mean[0]:.6f}, {coord_mean[1]:.6f}, {coord_mean[2]:.6f}], norm={coord_norm:.2e} {status}")
+            
+            start = end    
     # Test forward
     print(f"\n🔧 Testing forward pass...")
     try:
         with torch.no_grad():
-            output = model(batch)
+            output = model(batch, return_point=True)
         
         print(f"\n   ✅ Forward pass successful!")
         print(f"   Output type: {type(output)}")
@@ -199,7 +216,27 @@ def test_model_forward():
                     gt_i = gt[i]
                     error = torch.norm(pred_i - gt_i).item()
                     print(f"      Sample {i}: Pred={pred_i.tolist()}, GT={gt_i.tolist()}, Error={error:.6f}m ({error*1000:.2f}mm)")
-            
+
+            if "coord_centroid" in batch:
+                centroid_norm = batch["coord_centroid"].cpu()
+                
+                print(f"\n   📍 Coord Centroid (Normalized Space):")
+                for i in range(len(centroid_norm)):
+                    centroid_i = centroid_norm[i]
+                    print(f"      Sample {i}: [{centroid_i[0]:.6f}, {centroid_i[1]:.6f}, {centroid_i[2]:.6f}]")
+                
+                print(f"\n   📊 Prediction vs Centroid (Normalized Space):")
+                for i in range(len(pred_norm)):
+                    dist = torch.norm(pred_norm[i] - centroid_norm[i]).item()
+                    print(f"      Sample {i}: distance = {dist:.6f}")
+                
+                # 反归一化 centroid 到真实空间
+                centroid_real = centroid_norm * norm_scale + norm_offset
+                print(f"\n   📍 Coord Centroid (Real Space):")
+                for i in range(len(centroid_real)):
+                    centroid_i = centroid_real[i]
+                    print(f"      Sample {i}: [{centroid_i[0]:.6f}, {centroid_i[1]:.6f}, {centroid_i[2]:.6f}] (m)")
+
             if "loss" in output:
                 loss = output["loss"]
                 print(f"\n      📉 Loss: {loss.item():.6f}")

@@ -61,7 +61,6 @@ model = dict(
     use_parent_cloud=False,
     parent_backbone=None, # shared backbone
     fusion_type="cross_attention",  # "concat" | "cross_attention"  
-    predict_relative=True,
 )
 
 epoch = 500
