@@ -96,7 +96,6 @@ data = dict(
                 keys=("coord",),
                 gt_key="gt_position",
                 store_centroid=True,
-                keep_gt_absolute=True,
             ),            
             dict(type="RandomRotate", angle=[-1, 1], axis="z", center=[0, 0, 0], p=0.5),
             dict(type="RandomRotate", angle=[-1 / 64, 1 / 64], axis="x", p=0.5),
@@ -157,7 +156,6 @@ data = dict(
                 keys=("coord",),
                 gt_key="gt_position",
                 store_centroid=True,
-                keep_gt_absolute=True,
             ),            
             dict(
                 type="GridSample",
@@ -209,7 +207,6 @@ data = dict(
                 keys=("coord",),
                 gt_key="gt_position",
                 store_centroid=True,
-                keep_gt_absolute=True,
             ),            
             dict(type="NormalizeColor"),
         ],

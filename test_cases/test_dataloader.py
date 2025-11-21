@@ -3,6 +3,8 @@ import torch
 from pathlib import Path
 from torch.utils.data import DataLoader
 from functools import partial
+import numpy as np
+
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -39,7 +41,7 @@ def analyze_batch(batch, batch_idx, is_test=False):
         
         # 🔥 更新：添加新字段
         for key in ["coord", "grid_coord", "feat", "offset", 
-                    "gt_position_absolute", "gt_position_relative", "coord_centroid",  # 🔥 新增
+                    "gt_position", "coord_centroid",  # 🔥 新增
                     "name", "category_id", "parent_id"]:  # 🔥 新增
             if key in local:
                 value = local[key]
@@ -158,50 +160,24 @@ def analyze_batch(batch, batch_idx, is_test=False):
             else:
                 print(f"   - norm_scale: list of {len(norm_scale)} items")
     
-    # 🔥 新增：分析 GT（训练/验证集）
+    # 🔥 分析 GT（训练/验证集）
     if not is_test and "local" in batch:
         print(f"\n6️⃣  Ground Truth:")
         
-        # GT Absolute
-        if "gt_position_absolute" in batch["local"]:
-            gt_abs = batch["local"]["gt_position_absolute"]
-            print(f"   - gt_position_absolute shape: {gt_abs.shape}")
-            for j in range(min(gt_abs.shape[0], 3)):
-                print(f"      Sample {j}: [{gt_abs[j, 0]:.6f}, {gt_abs[j, 1]:.6f}, {gt_abs[j, 2]:.6f}]")
+        # GT Position（绝对位置）
+        if "gt_position" in batch["local"]:
+            gt_pos = batch["local"]["gt_position"]
+            print(f"   - gt_position shape: {gt_pos.shape}")
+            print(f"   - gt_position dtype: {gt_pos.dtype}")
+            for j in range(min(gt_pos.shape[0], 3)):
+                print(f"      Sample {j}: [{gt_pos[j, 0]:.6f}, {gt_pos[j, 1]:.6f}, {gt_pos[j, 2]:.6f}]")
         
-        # GT Relative
-        if "gt_position_relative" in batch["local"]:
-            gt_rel = batch["local"]["gt_position_relative"]
-            print(f"   - gt_position_relative shape: {gt_rel.shape}")
-            for j in range(min(gt_rel.shape[0], 3)):
-                print(f"      Sample {j}: [{gt_rel[j, 0]:.6f}, {gt_rel[j, 1]:.6f}, {gt_rel[j, 2]:.6f}]")
-        
-        # Coord Centroid
+        # Coord Centroid（用于调试）
         if "coord_centroid" in batch["local"]:
             centroid = batch["local"]["coord_centroid"]
             print(f"   - coord_centroid shape: {centroid.shape}")
             for j in range(min(centroid.shape[0], 3)):
                 print(f"      Sample {j}: [{centroid[j, 0]:.6f}, {centroid[j, 1]:.6f}, {centroid[j, 2]:.6f}]")
-        
-        # 🔥 验证：gt_relative + centroid = gt_absolute
-        if all(k in batch["local"] for k in ["gt_position_absolute", "gt_position_relative", "coord_centroid"]):
-            print(f"\n   验证恢复绝对位置:")
-            gt_abs = batch["local"]["gt_position_absolute"]
-            gt_rel = batch["local"]["gt_position_relative"]
-            centroid = batch["local"]["coord_centroid"]
-            
-            recovered = gt_rel + centroid
-            error = torch.norm(gt_abs - recovered, dim=1)
-            
-            for j in range(min(error.shape[0], 3)):
-                status = "✅" if error[j] < 1e-5 else "❌"
-                print(f"      Sample {j}: error = {error[j].item():.2e} {status}")
-            
-            max_error = error.max().item()
-            if max_error < 1e-5:
-                print(f"   ✅ 所有样本恢复误差 < 1e-5")
-            else:
-                print(f"   ⚠️  最大恢复误差: {max_error:.2e}")
     
     # 🔥 测试集：只有 coord_centroid
     if is_test and "local" in batch:
@@ -269,21 +245,50 @@ def test_single_sample():
             else:
                 print(f"      ✅ {key:15s}: {type(value).__name__}")
     
-    # 🔥 新增：验证 GT
-    if "gt_position_absolute" in sample and "gt_position_relative" in sample and "coord_centroid" in sample:
+    # 🔥 验证 GT 字段
+    if "gt_position" in sample:
         print(f"\n   验证 GT 字段:")
-        gt_abs = sample["gt_position_absolute"]
-        gt_rel = sample["gt_position_relative"]
-        centroid = sample["coord_centroid"]
+        gt_pos = sample["gt_position"]
+        print(f"   - gt_position: {gt_pos.numpy()}")
         
-        print(f"   - gt_position_absolute: {gt_abs.numpy()}")
-        print(f"   - gt_position_relative: {gt_rel.numpy()}")
-        print(f"   - coord_centroid: {centroid.numpy()}")
+        if "coord_centroid" in sample:
+            centroid = sample["coord_centroid"]
+            print(f"   - coord_centroid: {centroid.numpy()}")
+            
+            # 验证 gt_position 是否远离原点（绝对位置）
+            gt_norm = torch.norm(gt_pos).item()
+            print(f"   - gt_position norm: {gt_norm:.6f} {'✅ (绝对位置)' if gt_norm > 0.1 else '⚠️ (接近原点)'}")
+
+    if "local" in sample and "coord" in sample["local"]:
+        print(f"\n   验证坐标去中心化:")
+        coord = sample["local"]["coord"]
+        coord_mean = coord.mean(dim=0).numpy()
+        coord_norm = np.linalg.norm(coord_mean)
         
-        recovered = gt_rel + centroid
-        error = torch.norm(gt_abs - recovered).item()
-        print(f"   - 恢复误差: {error:.2e} {'✅' if error < 1e-5 else '❌'}")
-    
+        print(f"   - coord.mean(): [{coord_mean[0]:.6f}, {coord_mean[1]:.6f}, {coord_mean[2]:.6f}]")
+        print(f"   - coord.mean() norm: {coord_norm:.2e}")
+        
+        if coord_norm < 1e-4:
+            print(f"   ✅ coord 已去中心化（均值接近原点）")
+        else:
+            print(f"   ❌ coord 未去中心化（均值远离原点）")
+        
+        # 验证恢复
+        if "coord_centroid" in sample:
+            centroid = sample["coord_centroid"]
+            coord_recovered = coord + centroid
+            coord_recovered_mean = coord_recovered.mean(dim=0).numpy()
+            
+            print(f"\n   恢复原始坐标:")
+            print(f"   - (coord + centroid).mean(): [{coord_recovered_mean[0]:.6f}, {coord_recovered_mean[1]:.6f}, {coord_recovered_mean[2]:.6f}]")
+            print(f"   - 应该等于 coord_centroid: [{centroid[0]:.6f}, {centroid[1]:.6f}, {centroid[2]:.6f}]")
+            
+            error = np.linalg.norm(coord_recovered_mean - centroid.numpy())
+            if error < 1e-5:
+                print(f"   ✅ 恢复验证通过（误差 {error:.2e}）")
+            else:
+                print(f"   ❌ 恢复验证失败（误差 {error:.2e}）")
+
     # 分析归一化参数
     if "norm_offset" in sample:
         print(f"\n   归一化参数:")
